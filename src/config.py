@@ -48,3 +48,13 @@ TTS_VOLUME = 1.0
 # command, wake-word match info) to the console. Off by default so
 # normal output stays clean.
 DEBUG = False
+
+# Phase 9: when True, "lock computer"/"shutdown computer"/"restart
+# computer" speak a confirmation prompt and require an explicit "yes"/
+# "confirm"/"confirmed" reply (the wake word must be said again, same
+# as any other command) before actually executing - see
+# commands.CommandProcessor. Default False reproduces the exact
+# behavior these commands have had since Phase 3 (immediate execution,
+# no confirmation) - existing tests rely on this default and must keep
+# passing unmodified.
+REQUIRE_CONFIRMATION_FOR_DANGEROUS_COMMANDS = False

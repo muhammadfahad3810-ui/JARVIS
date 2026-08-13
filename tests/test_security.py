@@ -742,3 +742,180 @@ def test_chained_command_cannot_smuggle_an_unknown_dangerous_clause():
     # this test exists to prove is narrower and absolute: the unknown
     # "delete everything" clause is never independently dispatched.
     assert mock_mute.call_count <= 1
+
+
+# ---------------------------------------------------------------------
+# PHASE 9: dangerous-command confirmation layer - security guarantees.
+# No real subprocess/os.system/browser/Core Audio/keyboard/window call
+# is ever made by these tests - every real action primitive is mocked
+# at its point of use.
+# ---------------------------------------------------------------------
+
+def test_phase_9_introduces_no_new_execution_primitive():
+    """Structural guarantee: the confirmation layer added to
+    commands.py must not introduce subprocess, os.system, ctypes,
+    user32, comtypes, eval(, or exec( - it only gates the pre-existing,
+    already-fixed system_control.handle_system() call."""
+
+    import inspect
+
+    import commands
+
+    source = inspect.getsource(commands)
+
+    for forbidden in (
+        "import subprocess",
+        "import ctypes",
+        "comtypes",
+        "eval(",
+        "exec(",
+    ):
+        assert forbidden not in source, forbidden
+
+    # os.system is never called directly by commands.py either - it
+    # only ever reaches system_control.handle_system(), which already
+    # owns the one hardcoded os.system() call site (unchanged).
+    assert "os.system(" not in source
+
+
+def test_confirmation_default_is_false():
+    """The confirmation layer must be opt-in, not silently enabled -
+    default False preserves all pre-Phase-9 lock/shutdown/restart
+    behavior exactly."""
+
+    import config
+
+    assert config.REQUIRE_CONFIRMATION_FOR_DANGEROUS_COMMANDS is False
+
+
+def test_dangerous_command_with_mixed_action_blocks_all_real_primitives():
+    """Security-framed version of the defect this phase's incident
+    exposed: a dangerous phrase combined with ANY other recognized
+    action must never let that other action reach a real primitive
+    before confirmation - proven with every real-action surface mocked
+    simultaneously, not just the one the phrase obviously targets."""
+
+    import config
+    import commands
+
+    class FakeVoice:
+        def __init__(self):
+            self.spoken = []
+
+        def speak(self, text):
+            self.spoken.append(text)
+
+    dangerous_phrases = [
+        "lock computer and open chrome",
+        "shutdown computer and search google",
+        "restart computer and mute",
+        "shutdown computer then search google",
+    ]
+
+    for phrase in dangerous_phrases:
+        voice = FakeVoice()
+        processor = commands.CommandProcessor(voice)
+
+        with patch.object(
+            config, "REQUIRE_CONFIRMATION_FOR_DANGEROUS_COMMANDS", True
+        ), patch("system_control.subprocess.Popen") as mock_popen, \
+             patch("system_control.os.system") as mock_os_system, \
+             patch("web_control.webbrowser.open") as mock_web_open, \
+             patch("web_control.subprocess.Popen") as mock_web_popen, \
+             patch("web_control.os.path.exists", return_value=False), \
+             patch(
+                 "volume_control.audio_endpoint.set_volume_percent"
+             ) as mock_set_volume, \
+             patch(
+                 "volume_control.audio_endpoint.set_mute"
+             ) as mock_set_mute, \
+             patch(
+                 "media_control.input_control.press_key"
+             ) as mock_media_press, \
+             patch(
+                 "keyboard_control.input_control.press_key"
+             ) as mock_kb_press, \
+             patch(
+                 "keyboard_control.input_control.press_key_combo"
+             ) as mock_kb_combo, \
+             patch("window_control.user32.ShowWindow") as mock_win_show, \
+             patch(
+                 "window_control.user32.PostMessageW"
+             ) as mock_win_post:
+            result = processor.process(phrase)
+
+        assert result is True, phrase
+        mock_popen.assert_not_called()
+        mock_os_system.assert_not_called()
+        mock_web_open.assert_not_called()
+        mock_web_popen.assert_not_called()
+        mock_set_volume.assert_not_called()
+        mock_set_mute.assert_not_called()
+        mock_media_press.assert_not_called()
+        mock_kb_press.assert_not_called()
+        mock_kb_combo.assert_not_called()
+        mock_win_show.assert_not_called()
+        mock_win_post.assert_not_called()
+
+
+def test_confirmation_gate_only_accepts_the_fixed_allow_list():
+    """Casual affirmatives NOT in CONFIRM_WORDS ("yeah", "sure", "ok",
+    "yep") must NOT confirm a dangerous command - only the exact fixed
+    allow-list (yes/confirm/confirmed) may. Prevents a misheard or
+    loosely-matched reply from ever triggering a real system action."""
+
+    import config
+    import commands
+
+    class FakeVoice:
+        def __init__(self):
+            self.spoken = []
+
+        def speak(self, text):
+            self.spoken.append(text)
+
+    for casual_reply in ["yeah", "sure", "ok", "yep", "do it", "go ahead"]:
+        voice = FakeVoice()
+        processor = commands.CommandProcessor(voice)
+
+        with patch.object(
+            config, "REQUIRE_CONFIRMATION_FOR_DANGEROUS_COMMANDS", True
+        ), patch("system_control.os.system") as mock_system:
+            processor.process("shutdown computer")
+            result = processor.process(casual_reply)
+
+        assert result is True, casual_reply
+        mock_system.assert_not_called(), casual_reply
+        assert voice.spoken[-1] == "Cancelled.", casual_reply
+
+
+def test_confirmation_state_is_per_processor_instance_not_global():
+    """Structural guarantee: pending confirmation is stored on the
+    CommandProcessor instance (self._pending_confirmation), not at
+    module level - a second, independent CommandProcessor must never
+    see another instance's pending dangerous command."""
+
+    import config
+    import commands
+
+    class FakeVoice:
+        def __init__(self):
+            self.spoken = []
+
+        def speak(self, text):
+            self.spoken.append(text)
+
+    voice_a = FakeVoice()
+    processor_a = commands.CommandProcessor(voice_a)
+    voice_b = FakeVoice()
+    processor_b = commands.CommandProcessor(voice_b)
+
+    with patch.object(
+        config, "REQUIRE_CONFIRMATION_FOR_DANGEROUS_COMMANDS", True
+    ), patch("system_control.os.system") as mock_system:
+        processor_a.process("shutdown computer")
+
+        result = processor_b.process("yes")
+
+    mock_system.assert_not_called()
+    assert "don't know how to do that" in voice_b.spoken[-1]

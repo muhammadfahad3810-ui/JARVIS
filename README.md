@@ -302,6 +302,134 @@ the splitting module itself.
   remain exact-phrase-only, unchanged and un-loosened by any Phase 8
   natural-language rule.
 
+## Phase 9 — Dangerous Command Confirmation
+
+**Status: PHASE 9 COMPLETE.**
+
+Closes the exact gap Phase 8's own "Limitations" section named above:
+"lock computer"/"shutdown computer"/"restart computer" have executed
+immediately, with no safeguard, since Phase 3. Phase 9 adds an
+opt-in confirmation gate in front of those three commands only - no
+new dangerous capability is introduced, `system_control.py` is
+completely unmodified, and every action the gate can eventually
+trigger is one of the same three already-fixed, already-tested
+functions that existed before this phase.
+
+### Configuration
+
+`config.REQUIRE_CONFIRMATION_FOR_DANGEROUS_COMMANDS` - **default
+`False`**. With the default, behavior is byte-for-byte identical to
+every prior phase (verified: every pre-existing lock/shutdown/restart
+test runs completely unmodified, unpatched, against the real default).
+Set to `True` to require confirmation.
+
+### How it works
+
+1. "lock computer" / "shutdown computer" / "restart computer" (plus
+   the same politeness-wrapper variations already supported elsewhere,
+   e.g. "please lock computer") speaks a confirmation prompt ("Are you
+   sure you want to \<action\>? Say yes to confirm.") instead of
+   executing, and stores the pending command.
+2. The *next* utterance is treated purely as the reply - not split,
+   not normalized, not dispatched as a new command. Saying the wake
+   word again is required to reply, exactly like any other command;
+   `jarvis.py`'s wake-word loop needed no changes.
+3. Only "yes"/"confirm"/"confirmed" (an explicit, fixed, whole-word
+   allow-list) executes the stored command, via the unmodified
+   `system_control.handle_system()`. Anything else - "no", "yeah",
+   "sure", "do it", or any unrelated command - cancels: JARVIS says
+   "Cancelled.", the pending state is cleared, and nothing executes.
+
+### Mixed dangerous/action phrase protection
+
+A command combining a dangerous phrase with another recognized action
+- "lock computer and open chrome", "shutdown computer and search
+google", "restart computer and mute" - must never execute the other
+action before confirmation, and must never execute it at all even
+after confirmation (only the stored dangerous command runs). This
+required two non-obvious fixes over the first implementation attempt,
+both verified by dedicated tests:
+
+- **Dispatch order.** The confirmation gate must be the very first
+  check after the pending-confirmation check - before EXIT, GREETING,
+  WEB, WINDOW, VOLUME, everything. `intent_parser.classify("lock
+  computer")` is `UNKNOWN` (there is no SYSTEM category in that
+  classifier), so `natural_language.split_into_clauses()` correctly
+  refuses to split any phrase containing a dangerous command - the
+  whole unsplit phrase reaches the single-command dispatch chain as
+  one string. An earlier draft placed the gate immediately before the
+  `SYSTEM` dispatch step (later than several other branches); with
+  that ordering, `web_control.handle()`'s bare `"chrome" in command`
+  substring check fired first and opened Chrome before the dangerous
+  phrase was ever evaluated.
+- **Normalization order.** The gate checks a *lightly*-normalized
+  version of the raw command (lowercase + whitespace-collapse only) -
+  **not** the output of `command_parser.normalize()`. `normalize()`
+  can destroy a dangerous phrase before the gate would ever see it:
+  `"restart computer and mute"` normalizes to just `"mute"`
+  (`canonicalize_volume_phrase()` rewrites the *entire* string to
+  `"mute"` whenever that word appears anywhere in it - a pre-existing
+  Phase 5 behavior, not modified by Phase 9). Checking lightly-
+  normalized raw text instead means the dangerous phrase is always
+  seen intact, regardless of what `normalize()` would later do to the
+  rest of the string.
+
+### Development safety incident (disclosed honestly, not hidden)
+
+While verifying the mixed-phrase scenario above with an ad hoc,
+non-pytest diagnostic script, the input `"lock computer and open
+chrome"` was passed through a real `CommandProcessor` with only
+`system_control.os.system` mocked - `web_control`'s
+`subprocess.Popen`/`webbrowser.open`/`os.path.exists` were **not**
+mocked. Because of the dispatch-order defect above, `web_control.
+handle()` matched the bare `"chrome"` substring and **Chrome was
+actually launched** on the development machine. Process evidence
+(`Get-Process chrome`, two fresh `chrome.exe` processes with matching
+start timestamps) confirmed this. No lock, shutdown, or restart
+occurred - `system_control.os.system` was correctly mocked and
+recorded zero calls. Root cause: the diagnostic script mocked only
+the primitives assumed relevant to what was being checked, not every
+reachable real-action surface. Corrective action: no further manual
+`CommandProcessor` scripts were run for the remainder of this phase;
+all subsequent verification used pytest with every real-action
+surface mocked (`mock_all_real_actions()` in `tests/test_commands.py`,
+and the dedicated Phase 9 section of `tests/test_security.py`), plus
+the project's existing strict safety-net backstop across the full
+suite, which reported zero real/patched-through calls on the final run.
+
+### Security guarantees
+
+- No new execution primitive: `commands.py`'s confirmation logic
+  contains no `subprocess`, `ctypes`, `comtypes`, `eval(`, or `exec(`,
+  and never calls `os.system` directly - only the pre-existing,
+  unmodified `system_control.handle_system()` can.
+- Confirmation state (`self._pending_confirmation`) lives on the
+  `CommandProcessor` instance, not at module level - one processor's
+  pending confirmation is never visible to another.
+- The confirm-word check is a fixed 3-word allow-list
+  (yes/confirm/confirmed), not free-text interpretation - casual
+  affirmatives ("yeah", "sure", "ok") do not confirm.
+- A chained dangerous phrase can never partially execute the
+  secondary action, before or after confirmation.
+
+### Known limitations
+
+- Dangerous-phrase matching mirrors `system_control.handle_system()`'s
+  existing bare-substring semantics exactly (by design, to stay
+  consistent with the rest of this codebase) - this means the same
+  pre-existing substring-trap characteristic applies (e.g. "my lock
+  computer test" or "restart computer settings" both match, exactly as
+  `system_control.py` already would without confirmation). Phase 9
+  does not change or improve this matching; it only adds a
+  confirmation gate in front of whatever `system_control.py` would
+  already have matched.
+- Rejecting or giving an invalid confirmation reply discards that
+  entire utterance - if it happened to also contain an unrelated valid
+  command, that command is not executed either. The user simply
+  repeats it.
+- No timeout on a pending confirmation - it remains pending until the
+  next utterance, however long that takes.
+
 ## Configuration options (`src/config.py`)
 
 | Setting | Purpose |
@@ -487,8 +615,14 @@ LLM or external API is involved.
 - "Jarvis press enter" / "press escape" / "press space" / "press tab"
 - "Jarvis copy" / "paste" / "select all" / "undo"
 
-### System power (unchanged since v2)
+### System power
 - "Jarvis lock computer" / "Jarvis shutdown computer" / "Jarvis restart computer"
+  - Execute immediately by default (unchanged since v2). If
+    `config.REQUIRE_CONFIRMATION_FOR_DANGEROUS_COMMANDS` is set to
+    `True` (Phase 9, off by default), each speaks a confirmation prompt
+    and waits for a follow-up "yes"/"confirm"/"confirmed" (say the wake
+    word again) before executing - anything else cancels. See "Phase 9"
+    above.
 
 ### Info / conversation
 - "Jarvis what time is it" / "Jarvis what's the date" / "Jarvis what day is it"
@@ -561,27 +695,31 @@ automated tests:
 python -m pytest -q
 ```
 
-**Exact result as of the last verified run (Phase 8):** `405 passed, 2
-warnings in 0.75s` - `0 failed`, `0 skipped`. The 2 warnings are
+**Exact result as of the last verified run (Phase 9):** `435 passed, 2
+warnings in 0.90s` - `0 failed`, `0 skipped`. The 2 warnings are
 pre-existing, unrelated `DeprecationWarning`s from inside the
 `speech_recognition` package itself (`aifc`, `audioop`), not from this
 project's code. A dedicated safety-net verification pass - mocking
 every real Windows/COM entry point independently of what each test
 patches itself - confirmed zero real Core Audio COM calls, zero real
 Windows API (`user32`) calls, zero `subprocess.Popen`/`os.system`
-calls, and zero keyboard-injection calls across the full suite. (This
-pass caught and fixed one real, unmocked `keybd_event` call during
-Phase 8 test development itself - see the Phase 8 section above for
-why that risk exists structurally in this codebase, and
-`tests/test_security.py` for the corrected, fully-mocked test.)
+calls, and zero keyboard-injection calls across the full suite. (An
+equivalent, non-pytest, manual diagnostic script incompletely mocked
+during Phase 8 development caught one real, unmocked `keybd_event`
+call, and a similar manual script during Phase 9 development caught a
+real, unmocked Chrome launch - see the Phase 9 section above for the
+full incident disclosure. Neither happened inside the actual pytest
+suite itself; both are documented as development-process findings that
+led directly to the fully-mocked tests now in place.)
 
 Phase 5 baseline was `170 passed` (verified before any Phase 5 change
 was made); Phase 5 finished at `259 passed`. Phase 6 (targeted window
 control by application name) finished at `288 passed`. Phase 7
 (absolute volume + true mute/unmute via Core Audio) finished at `346
 passed`. Phase 8 (natural-language synonym extensions + bounded
-multi-clause chaining) added 59 tests, finishing at `405 passed` - none
-removed or weakened, 0 failures at any phase boundary.
+multi-clause chaining) finished at `405 passed`. Phase 9 (dangerous-
+command confirmation layer) added 30 tests, finishing at `435 passed`
+- none removed or weakened, 0 failures at any phase boundary.
 
 ### Manual tests actually performed (Phase 5)
 

@@ -1,10 +1,63 @@
+import contextlib
 from unittest.mock import patch
 
 import commands
+import config
 import media_control
 import volume_control
 import keyboard_control
 import window_control
+
+
+@contextlib.contextmanager
+def mock_all_real_actions():
+    """Mocks every real-world action surface reachable from
+    CommandProcessor.process(), for Phase 9 tests that must prove a
+    pending dangerous command blocks ALL other action types - not just
+    the one a specific phrase would obviously reach."""
+
+    with patch("system_control.subprocess.Popen") as popen, \
+         patch("system_control.os.system") as os_system, \
+         patch("web_control.webbrowser.open") as web_open, \
+         patch("web_control.subprocess.Popen") as web_popen, \
+         patch("web_control.os.path.exists", return_value=False), \
+         patch(
+             "volume_control.audio_endpoint.set_volume_percent"
+         ) as set_volume, \
+         patch("volume_control.audio_endpoint.set_mute") as set_mute, \
+         patch("media_control.input_control.press_key") as media_press, \
+         patch(
+             "keyboard_control.input_control.press_key"
+         ) as keyboard_press, \
+         patch(
+             "keyboard_control.input_control.press_key_combo"
+         ) as keyboard_combo, \
+         patch("window_control.user32.ShowWindow") as window_show, \
+         patch("window_control.user32.PostMessageW") as window_post, \
+         patch(
+             "window_control.user32.GetForegroundWindow", return_value=1
+         ):
+        yield {
+            "popen": popen,
+            "os_system": os_system,
+            "web_open": web_open,
+            "web_popen": web_popen,
+            "set_volume": set_volume,
+            "set_mute": set_mute,
+            "media_press": media_press,
+            "keyboard_press": keyboard_press,
+            "keyboard_combo": keyboard_combo,
+            "window_show": window_show,
+            "window_post": window_post,
+        }
+
+
+def _assert_nothing_but_prompt_happened(mocks):
+    """Every mocked real-action surface must be completely untouched -
+    only voice.speak() (checked separately by callers) is allowed."""
+
+    for name, mock in mocks.items():
+        assert mock.call_count == 0, f"{name} was called: {mock.call_args_list}"
 
 
 class FakeVoice:
@@ -928,3 +981,430 @@ def test_chained_command_with_dangerous_second_clause_is_not_split():
     assert result is True
     mock_popen.assert_not_called()
     mock_open.assert_called_once_with("https://www.google.com")
+
+
+# ---------------------------------------------------------------------
+# PHASE 9: dangerous-command confirmation layer
+# ---------------------------------------------------------------------
+
+# ---- A. Confirmation disabled (default) - existing behavior unchanged
+# (also independently proven by every pre-existing lock/shutdown/
+# restart test above and in test_security.py, run completely
+# unmodified with the real default config.REQUIRE_CONFIRMATION_FOR_
+# DANGEROUS_COMMANDS = False - not patched anywhere in this file.)
+
+def test_confirmation_disabled_by_default_executes_immediately():
+    assert config.REQUIRE_CONFIRMATION_FOR_DANGEROUS_COMMANDS is False
+
+    processor, voice = make_processor()
+
+    with patch("system_control.os.system") as mock_system:
+        result = processor.process("shutdown computer")
+
+    assert result is True
+    mock_system.assert_called_once_with("shutdown /s /t 5")
+    assert "Shutting down" in voice.spoken[0]
+
+
+# ---- B. Confirmation enabled -> prompt, no os.system call ----
+
+def test_lock_computer_prompts_and_does_not_execute():
+    processor, voice = make_processor()
+
+    with patch.object(
+        config, "REQUIRE_CONFIRMATION_FOR_DANGEROUS_COMMANDS", True
+    ), patch("system_control.os.system") as mock_system:
+        result = processor.process("lock computer")
+
+    assert result is True
+    mock_system.assert_not_called()
+    assert "sure" in voice.spoken[-1].lower()
+    assert "lock" in voice.spoken[-1].lower()
+
+
+def test_shutdown_computer_prompts_and_does_not_execute():
+    processor, voice = make_processor()
+
+    with patch.object(
+        config, "REQUIRE_CONFIRMATION_FOR_DANGEROUS_COMMANDS", True
+    ), patch("system_control.os.system") as mock_system:
+        result = processor.process("shutdown computer")
+
+    assert result is True
+    mock_system.assert_not_called()
+    assert "sure" in voice.spoken[-1].lower()
+    assert "shut down" in voice.spoken[-1].lower()
+
+
+def test_restart_computer_prompts_and_does_not_execute():
+    processor, voice = make_processor()
+
+    with patch.object(
+        config, "REQUIRE_CONFIRMATION_FOR_DANGEROUS_COMMANDS", True
+    ), patch("system_control.os.system") as mock_system:
+        result = processor.process("restart computer")
+
+    assert result is True
+    mock_system.assert_not_called()
+    assert "sure" in voice.spoken[-1].lower()
+    assert "restart" in voice.spoken[-1].lower()
+
+
+# ---- C. Confirmation accepted -> exactly one system action ----
+
+def test_confirmation_accepted_with_yes_executes_exactly_once():
+    processor, voice = make_processor()
+
+    with patch.object(
+        config, "REQUIRE_CONFIRMATION_FOR_DANGEROUS_COMMANDS", True
+    ), patch("system_control.os.system") as mock_system:
+        processor.process("shutdown computer")
+        result = processor.process("yes")
+
+    assert result is True
+    mock_system.assert_called_once_with("shutdown /s /t 5")
+
+
+def test_confirmation_accepted_with_confirm_executes_exactly_once():
+    processor, voice = make_processor()
+
+    with patch.object(
+        config, "REQUIRE_CONFIRMATION_FOR_DANGEROUS_COMMANDS", True
+    ), patch("system_control.os.system") as mock_system:
+        processor.process("lock computer")
+        result = processor.process("confirm")
+
+    assert result is True
+    mock_system.assert_called_once_with(
+        "rundll32.exe user32.dll,LockWorkStation"
+    )
+
+
+def test_confirmation_accepted_with_confirmed_executes_exactly_once():
+    processor, voice = make_processor()
+
+    with patch.object(
+        config, "REQUIRE_CONFIRMATION_FOR_DANGEROUS_COMMANDS", True
+    ), patch("system_control.os.system") as mock_system:
+        processor.process("restart computer")
+        result = processor.process("confirmed")
+
+    assert result is True
+    mock_system.assert_called_once_with("shutdown /r /t 5")
+
+
+def test_confirmation_reply_requires_wake_word_style_matching():
+    """'jarvis yes' works too - the confirm check is whole-word, not an
+    exact-string match, consistent with how every command already
+    requires the wake word to have been stripped by jarvis.py first."""
+
+    processor, voice = make_processor()
+
+    with patch.object(
+        config, "REQUIRE_CONFIRMATION_FOR_DANGEROUS_COMMANDS", True
+    ), patch("system_control.os.system") as mock_system:
+        processor.process("shutdown computer")
+        result = processor.process("yes shut it down")
+
+    assert result is True
+    mock_system.assert_called_once_with("shutdown /s /t 5")
+
+
+# ---- D. Confirmation rejected ("no") ----
+
+def test_confirmation_rejected_with_no_does_not_execute():
+    processor, voice = make_processor()
+
+    with patch.object(
+        config, "REQUIRE_CONFIRMATION_FOR_DANGEROUS_COMMANDS", True
+    ), patch("system_control.os.system") as mock_system:
+        processor.process("shutdown computer")
+        result = processor.process("no")
+
+    assert result is True
+    mock_system.assert_not_called()
+    assert voice.spoken[-1] == "Cancelled."
+
+
+def test_confirmation_rejected_clears_pending_state():
+    """After a rejected confirmation, the NEXT command must be treated
+    as a brand new command, not another confirmation reply."""
+
+    processor, voice = make_processor()
+
+    with patch.object(
+        config, "REQUIRE_CONFIRMATION_FOR_DANGEROUS_COMMANDS", True
+    ), patch("system_control.os.system") as mock_system:
+        processor.process("shutdown computer")
+        processor.process("no")
+
+        with patch("volume_control.audio_endpoint.set_mute") as mock_mute:
+            result = processor.process("mute")
+
+    assert result is True
+    mock_system.assert_not_called()
+    mock_mute.assert_called_once_with(True)
+
+
+# ---- E. Invalid/ambiguous confirmation reply ----
+
+def test_confirmation_with_unrelated_reply_is_treated_as_cancellation():
+    processor, voice = make_processor()
+
+    with patch.object(
+        config, "REQUIRE_CONFIRMATION_FOR_DANGEROUS_COMMANDS", True
+    ), patch("system_control.os.system") as mock_system:
+        processor.process("shutdown computer")
+        result = processor.process("do it")
+
+    assert result is True
+    mock_system.assert_not_called()
+    assert voice.spoken[-1] == "Cancelled."
+
+
+def test_confirmation_pending_state_cleared_after_invalid_reply():
+    processor, voice = make_processor()
+
+    with patch.object(
+        config, "REQUIRE_CONFIRMATION_FOR_DANGEROUS_COMMANDS", True
+    ), patch("system_control.os.system") as mock_system:
+        processor.process("shutdown computer")
+        processor.process("do it")
+
+        with patch("web_control.webbrowser.open") as mock_open, \
+             patch("web_control.os.path.exists", return_value=False):
+            result = processor.process("open chrome")
+
+    assert result is True
+    mock_system.assert_not_called()
+    mock_open.assert_called_once_with("https://www.google.com")
+
+
+# ---- Harmless conversational wrappers still work ----
+
+def test_please_lock_computer_prompts():
+    processor, voice = make_processor()
+
+    with patch.object(
+        config, "REQUIRE_CONFIRMATION_FOR_DANGEROUS_COMMANDS", True
+    ), patch("system_control.os.system") as mock_system:
+        result = processor.process("please lock computer")
+
+    assert result is True
+    mock_system.assert_not_called()
+    assert "lock" in voice.spoken[-1].lower()
+
+
+def test_i_want_you_to_restart_computer_prompts():
+    processor, voice = make_processor()
+
+    with patch.object(
+        config, "REQUIRE_CONFIRMATION_FOR_DANGEROUS_COMMANDS", True
+    ), patch("system_control.os.system") as mock_system:
+        result = processor.process("i want you to restart computer")
+
+    assert result is True
+    mock_system.assert_not_called()
+    assert "restart" in voice.spoken[-1].lower()
+
+
+def test_can_you_shut_down_the_computer_still_does_not_match():
+    """Pre-existing (Phase 5) non-match, unrelated to and unchanged by
+    Phase 9: 'shut down the computer' has never been recognized as the
+    canonical 'shutdown computer' phrase (different words/spacing) -
+    confirmation mode does not change this, it only gates phrases that
+    were already recognized."""
+
+    processor, voice = make_processor()
+
+    with patch.object(
+        config, "REQUIRE_CONFIRMATION_FOR_DANGEROUS_COMMANDS", True
+    ), patch("system_control.os.system") as mock_system:
+        result = processor.process("can you shut down the computer")
+
+    assert result is True
+    mock_system.assert_not_called()
+    assert "don't know how to do that" in voice.spoken[-1]
+
+
+# ---- Documented substring-matching characteristic (pre-existing,
+# not introduced by Phase 9 - system_control.handle_system() already
+# matches these same substrings today; the confirmation gate mirrors
+# that exact matching, it does not make it broader or narrower) ----
+
+def test_substring_trap_my_lock_computer_test_still_prompts():
+    """Pre-existing substring-matching characteristic: system_control.
+    handle_system() already treats 'my lock computer test' as
+    containing 'lock computer' today (with confirmation OFF, it would
+    already execute lock immediately) - the Phase 9 gate mirrors this
+    exact matching, neither adding nor removing this behavior."""
+
+    processor, voice = make_processor()
+
+    with patch.object(
+        config, "REQUIRE_CONFIRMATION_FOR_DANGEROUS_COMMANDS", True
+    ), patch("system_control.os.system") as mock_system:
+        result = processor.process("my lock computer test")
+
+    assert result is True
+    mock_system.assert_not_called()
+    assert "lock" in voice.spoken[-1].lower()
+
+
+def test_substring_trap_computer_shutdown_information_does_not_match():
+    """'computer shutdown' (reversed word order) is not the substring
+    'shutdown computer' - correctly does not match, same as
+    system_control.handle_system() would not match it today."""
+
+    processor, voice = make_processor()
+
+    with patch.object(
+        config, "REQUIRE_CONFIRMATION_FOR_DANGEROUS_COMMANDS", True
+    ), patch("system_control.os.system") as mock_system:
+        result = processor.process("computer shutdown information")
+
+    assert result is True
+    mock_system.assert_not_called()
+    assert "don't know how to do that" in voice.spoken[-1]
+
+
+def test_substring_trap_restart_computer_settings_still_prompts():
+    processor, voice = make_processor()
+
+    with patch.object(
+        config, "REQUIRE_CONFIRMATION_FOR_DANGEROUS_COMMANDS", True
+    ), patch("system_control.os.system") as mock_system:
+        result = processor.process("restart computer settings")
+
+    assert result is True
+    mock_system.assert_not_called()
+    assert "restart" in voice.spoken[-1].lower()
+
+
+# ---- F. Dangerous command cannot execute another action, even mixed
+# with a recognized secondary phrase - EVERY real action surface
+# mocked, not just the obviously-relevant one. ----
+
+def test_lock_computer_and_open_chrome_blocks_everything_but_the_prompt():
+    processor, voice = make_processor()
+
+    with patch.object(
+        config, "REQUIRE_CONFIRMATION_FOR_DANGEROUS_COMMANDS", True
+    ), mock_all_real_actions() as mocks:
+        result = processor.process("lock computer and open chrome")
+
+    assert result is True
+    _assert_nothing_but_prompt_happened(mocks)
+    assert voice.spoken == [
+        "Are you sure you want to lock the computer? Say yes to confirm."
+    ]
+
+
+def test_shutdown_computer_and_search_google_blocks_everything_but_the_prompt():
+    processor, voice = make_processor()
+
+    with patch.object(
+        config, "REQUIRE_CONFIRMATION_FOR_DANGEROUS_COMMANDS", True
+    ), mock_all_real_actions() as mocks:
+        result = processor.process("shutdown computer and search google")
+
+    assert result is True
+    _assert_nothing_but_prompt_happened(mocks)
+    assert voice.spoken == [
+        "Are you sure you want to shut down the computer? Say yes to confirm."
+    ]
+
+
+def test_restart_computer_and_mute_blocks_everything_but_the_prompt():
+    """This is the case that exposed the original gate-placement/
+    normalize()-ordering defect: 'restart computer and mute' normalizes
+    to just 'mute' (canonicalize_volume_phrase() rewrites the whole
+    string), so the dangerous-command gate MUST check lightly-
+    normalized raw text before normalize() runs, or this phrase would
+    silently mute the system with no confirmation and 'restart
+    computer' would be discarded entirely."""
+
+    processor, voice = make_processor()
+
+    with patch.object(
+        config, "REQUIRE_CONFIRMATION_FOR_DANGEROUS_COMMANDS", True
+    ), mock_all_real_actions() as mocks:
+        result = processor.process("restart computer and mute")
+
+    assert result is True
+    _assert_nothing_but_prompt_happened(mocks)
+    assert voice.spoken == [
+        "Are you sure you want to restart the computer? Say yes to confirm."
+    ]
+
+
+# ---- G. Confirmation only executes the stored dangerous command,
+# never the discarded secondary action. ----
+
+def test_lock_computer_and_open_chrome_then_yes_only_locks():
+    processor, voice = make_processor()
+
+    with patch.object(
+        config, "REQUIRE_CONFIRMATION_FOR_DANGEROUS_COMMANDS", True
+    ), mock_all_real_actions() as mocks:
+        processor.process("lock computer and open chrome")
+        result = processor.process("yes")
+
+    assert result is True
+    mocks["os_system"].assert_called_once_with(
+        "rundll32.exe user32.dll,LockWorkStation"
+    )
+    mocks["web_open"].assert_not_called()
+    mocks["web_popen"].assert_not_called()
+    mocks["set_volume"].assert_not_called()
+    mocks["set_mute"].assert_not_called()
+    mocks["keyboard_press"].assert_not_called()
+    mocks["keyboard_combo"].assert_not_called()
+    mocks["media_press"].assert_not_called()
+    mocks["window_show"].assert_not_called()
+    mocks["window_post"].assert_not_called()
+    mocks["popen"].assert_not_called()
+
+
+def test_restart_computer_and_mute_then_confirmed_only_restarts():
+    processor, voice = make_processor()
+
+    with patch.object(
+        config, "REQUIRE_CONFIRMATION_FOR_DANGEROUS_COMMANDS", True
+    ), mock_all_real_actions() as mocks:
+        processor.process("restart computer and mute")
+        result = processor.process("confirmed")
+
+    assert result is True
+    mocks["os_system"].assert_called_once_with("shutdown /r /t 5")
+    mocks["set_mute"].assert_not_called()
+    mocks["set_volume"].assert_not_called()
+    mocks["web_open"].assert_not_called()
+
+
+# ---- H. Confirmation cannot be bypassed by Phase 8 chaining ----
+
+def test_shutdown_computer_then_search_google_never_partially_executes():
+    processor, voice = make_processor()
+
+    with patch.object(
+        config, "REQUIRE_CONFIRMATION_FOR_DANGEROUS_COMMANDS", True
+    ), mock_all_real_actions() as mocks:
+        result = processor.process("shutdown computer then search google")
+
+    assert result is True
+    _assert_nothing_but_prompt_happened(mocks)
+
+
+def test_chained_dangerous_command_confirmed_executes_only_once():
+    processor, voice = make_processor()
+
+    with patch.object(
+        config, "REQUIRE_CONFIRMATION_FOR_DANGEROUS_COMMANDS", True
+    ), mock_all_real_actions() as mocks:
+        processor.process("shutdown computer then search google")
+        result = processor.process("yes")
+
+    assert result is True
+    mocks["os_system"].assert_called_once_with("shutdown /s /t 5")
+    mocks["web_open"].assert_not_called()
