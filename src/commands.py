@@ -6,6 +6,7 @@ import config
 import intent_parser
 import keyboard_control
 import media_control
+import natural_language
 import screen_control
 import system_control
 import volume_control
@@ -103,7 +104,32 @@ class CommandProcessor:
 
         Returns False if this was an exit command (caller should stop
         the main loop), True otherwise.
+
+        Phase 8: if `command` deterministically splits into more than
+        one already-known clause (see natural_language.split_into_
+        clauses() - "open chrome and search for python"), each clause
+        is processed independently, in order, through this exact same
+        method - no validation is bypassed, nothing here executes a
+        clause directly. If it does NOT cleanly split (including the
+        common case of a single, unchanged command), `command` is used
+        completely unmodified below, byte-for-byte identical to before
+        Phase 8.
         """
+
+        clauses = natural_language.split_into_clauses(command)
+
+        if len(clauses) > 1:
+
+            if config.DEBUG:
+                print(f"[DEBUG] split '{command}' into clauses: {clauses}")
+
+            result = True
+
+            for clause in clauses:
+                if not self.process(clause):
+                    result = False
+
+            return result
 
         raw_command = command
         command = command_parser.normalize(command)

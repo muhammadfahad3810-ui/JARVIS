@@ -254,6 +254,98 @@ def test_unrelated_text_is_not_treated_as_set_volume():
 
 
 # ---------------------------------------------------------------------
+# PHASE 8: natural-language synonym extensions
+# ---------------------------------------------------------------------
+
+def test_search_google_for_python():
+    assert command_parser.normalize(
+        "search google for python tutorials"
+    ) == "search for python tutorials"
+
+
+def test_search_on_google_for_python():
+    assert command_parser.normalize(
+        "search on google for python tutorials"
+    ) == "search for python tutorials"
+
+
+def test_make_the_volume_40_percent():
+    """New Phase 8 verb form with no 'to' - existing 'set volume to N
+    percent' form is unaffected (tested elsewhere), this only adds
+    additional accepted verb/phrasing variants."""
+    assert command_parser.normalize(
+        "make the volume 40 percent"
+    ) == "set volume to 40"
+
+
+def test_turn_the_volume_to_40_percent():
+    assert command_parser.normalize(
+        "turn the volume to 40 percent"
+    ) == "set volume to 40"
+
+
+def test_change_the_volume_to_0_percent():
+    assert command_parser.normalize(
+        "change the volume to 0 percent"
+    ) == "set volume to 0"
+
+
+def test_make_the_volume_150_percent_is_rejected_not_clamped():
+    result = command_parser.normalize("make the volume 150 percent")
+    assert result == "make the volume 150 percent"
+
+
+def test_make_the_volume_negative_percent_is_rejected():
+    result = command_parser.normalize("make the volume -10 percent")
+    assert result == "make the volume -10 percent"
+
+
+def test_turn_the_volume_to_decimal_percent_is_rejected():
+    result = command_parser.normalize("turn the volume to 40.5 percent")
+    assert result == "turn the volume to 40.5 percent"
+
+
+def test_change_the_volume_to_spelled_out_percent_is_rejected():
+    result = command_parser.normalize("change the volume to forty percent")
+    assert result == "change the volume to forty percent"
+
+
+def test_turn_the_volume_to_huge_number_percent_is_rejected():
+    result = command_parser.normalize(
+        "turn the volume to 999999999999999999 percent"
+    )
+    assert result == "turn the volume to 999999999999999999 percent"
+
+
+def test_new_set_volume_verbs_do_not_collide_with_up_down_phrasing():
+    """The broadened SET_VOLUME_PATTERN requires digits - phrases with
+    no digits (the existing up/down synonyms) must be completely
+    unaffected by the Phase 8 change."""
+    assert command_parser.normalize("turn the volume up") == "volume up"
+    assert command_parser.normalize("turn the volume down") == "volume down"
+    assert command_parser.normalize("make the volume louder") == "volume up"
+
+
+def test_stop_the_music_is_pause():
+    assert command_parser.normalize("stop the music") == "pause"
+
+
+def test_stop_the_song_is_pause():
+    assert command_parser.normalize("stop the song") == "pause"
+
+
+def test_stop_playing_is_pause():
+    assert command_parser.normalize("stop playing") == "pause"
+
+
+def test_bare_stop_is_not_rewritten():
+    """Bare 'stop' with no music/song/playing word is too ambiguous to
+    guess at - must be left unrecognized, not guessed as 'pause'."""
+    result = command_parser.normalize("stop")
+    assert result == "stop"
+
+
+# ---------------------------------------------------------------------
 # TIME variations (already pass through unchanged - "time" is a bare
 # substring match downstream, no rewrite needed)
 # ---------------------------------------------------------------------

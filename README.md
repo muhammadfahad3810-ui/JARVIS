@@ -176,6 +176,132 @@ package was added for this phase) against the public
 README documentation was the last outstanding Phase 7 item before this
 update - with this update, no further Phase 7 work remains outstanding.
 
+## Phase 8 — Natural Language Intelligence & Conversational Layer
+
+**Status: PHASE 8 COMPLETE.**
+
+`command_parser.py` already *was* JARVIS's natural-language layer,
+since Phase 5. Phase 8 extends it with a few new, narrow synonym
+rules, plus one genuinely new capability - bounded multi-clause
+command splitting (`src/natural_language.py`). Nothing here is a new
+AI/NLU system: every rule is a small, explicit, hand-written
+regex/substring check, exactly like every existing rule in
+`command_parser.py`.
+
+### Architecture
+
+```
+speech -> wake-word detection -> speech-to-text
+       -> natural_language.split_into_clauses()   (Phase 8, optional)
+       -> command_parser.normalize()               (per clause)
+       -> commands.CommandProcessor dispatch chain (per clause, unchanged)
+       -> existing safe control modules
+```
+
+`natural_language.split_into_clauses()` runs first, inside
+`CommandProcessor.process()`, before `command_parser.normalize()`. If
+the input doesn't cleanly split into multiple *already-known* clauses,
+the single, unmodified original command flows through the exact same
+code path as before Phase 8 - zero behavior change for any command
+that isn't a chain.
+
+### New natural-language examples supported
+
+- "search google for python tutorials" / "search on google for python
+  tutorials" -> `search for python tutorials` (previously produced the
+  wrong query text, `search for google for python tutorials`)
+- "make the volume 40 percent" / "turn the volume to 40 percent" /
+  "change the volume to 0 percent" -> `set volume to <N>` (broadens the
+  accepted verb/phrasing around the existing Phase 7 absolute-volume
+  command; the 0-100 range validation and reject-never-clamp policy
+  are completely unchanged)
+- "stop the music" / "stop the song" / "stop playing" -> `pause`
+  (there is no separate "stop" capability anywhere in this codebase,
+  only the existing play/pause toggle, so this maps onto that
+  already-supported command rather than inventing a new one)
+- "open chrome and search for python" / "open notepad and mute" -
+  bounded multi-clause chaining, see below
+
+### Multi-clause chaining (bounded, all-or-nothing)
+
+`src/natural_language.py` can split one utterance into multiple clauses
+on "and"/"then", but only commits to the split if **every** resulting
+clause independently classifies as an already-known command via
+`intent_parser.classify()` (the existing, pure, side-effect-free
+allow-list classifier). If even one clause doesn't resolve, the split
+is discarded entirely and the original, unsplit text is processed as a
+single command instead - exactly as before Phase 8.
+
+This is what keeps ordinary phrases that merely contain the word "and"
+safe: "search for bed and breakfast" never gets wrongly split (since
+"breakfast" alone isn't a known command), and is instead processed
+whole - which already works correctly, since it starts with "search
+for". A chain with a dangerous-sounding but unrecognized second clause
+("open chrome and delete everything") also never splits; the unsplit
+phrase then follows the same "dangerous suffix is discarded" behavior
+already true of non-chained commands since Phase 5 (e.g. "close chrome
+and then format the c drive").
+
+### Ambiguity handling - conservative by design
+
+Phrases with no deterministic mapping are rejected, never guessed:
+"do something", "make it better", "open something", "volume high" all
+fall through to the standard "I don't know how to do that" response,
+with zero real action of any kind triggered (verified directly by
+tests mocking every real action primitive).
+
+**One documented subtlety:** "maybe mute it" *is* handled (it triggers
+mute) - not because Phase 8 guesses at it, but because
+`canonicalize_volume_phrase()`'s `MUTE_WORD` rule has matched any text
+containing the whole word "mute" since Phase 5, predating Phase 8
+entirely. This is pre-existing, already-tested behavior that Phase 8
+does not and should not change without a proven defect - documented
+here so it isn't mistaken for a missed ambiguity case.
+
+### Security boundary (unchanged, extended coverage)
+
+Every guarantee below was true before Phase 8 and remains true,
+verified by dedicated tests:
+
+- The natural-language layer never executes shell commands, never
+  calls `subprocess.Popen`/`os.system` directly, never touches
+  `ctypes`/`user32`/Core Audio/`comtypes` directly, and never sends a
+  keyboard-injection primitive directly - `src/natural_language.py`
+  and the `command_parser.py` extensions only ever produce or split
+  *text*; only the existing, unchanged control modules act on it.
+- `natural_language.py` holds no reference to `voice`, `commands`, or
+  any control module - it structurally cannot bypass
+  `CommandProcessor` or call a handler directly.
+- Out-of-range/malformed absolute-volume values (negative, >100, huge
+  numeric payloads, decimals, spelled-out numbers) are rejected under
+  every new Phase 8 verb form ("make"/"turn"/"change" the volume), not
+  just the original Phase 7 "set volume to" form - never clamped,
+  never reaching the Core Audio setter.
+- A chain can never partially execute an unrecognized/dangerous clause
+  - the all-or-nothing split guarantee is enforced at the splitting
+  layer and re-verified end-to-end through the real `CommandProcessor`.
+
+See `tests/test_security.py`'s "PHASE 8" section for the full test
+list, and `tests/test_natural_language.py` for direct unit coverage of
+the splitting module itself.
+
+### Limitations
+
+- No conversational memory/context system was introduced - deliberately
+  out of scope for this phase. Every command, chained or not, is still
+  evaluated statelessly.
+- `intent_parser.classify()` (used to validate chain clauses) doesn't
+  cover exit words or greetings, so a chain like "open chrome and exit"
+  never splits - it fails closed (processed as one unrecognized phrase)
+  rather than being guessed at. This is safe but means such chains
+  simply don't work yet.
+- Multi-clause splitting only recognizes "and"/"then" as conjunctions;
+  no other punctuation or phrasing splits a chain.
+- No confirmation/dangerous-command layer was added - Phase 8
+  introduces no new dangerous capability, and lock/shutdown/restart
+  remain exact-phrase-only, unchanged and un-loosened by any Phase 8
+  natural-language rule.
+
 ## Configuration options (`src/config.py`)
 
 | Setting | Purpose |
@@ -259,6 +385,7 @@ JARVIS/
 │   ├── speech.py             # Microphone input + speech-to-text
 │   ├── voice.py               # Text-to-speech (pyttsx3)
 │   ├── command_parser.py      # Deterministic natural-language normalization
+│   ├── natural_language.py    # Bounded multi-clause command splitting (Phase 8)
 │   ├── intent_parser.py       # Fixed-allow-list intent classifier (diagnostics/testing)
 │   ├── commands.py            # Command routing (time/date, greetings, exit)
 │   ├── system_control.py      # Windows apps + power commands
@@ -275,6 +402,7 @@ JARVIS/
 ├── tests/
 │   ├── test_commands.py
 │   ├── test_command_parser.py
+│   ├── test_natural_language.py
 │   ├── test_system_control.py
 │   ├── test_window_control.py
 │   ├── test_volume_control.py
@@ -304,7 +432,8 @@ LLM or external API is involved.
 - "Jarvis open Edge"
 - "Jarvis open YouTube" / "Jarvis open Google" / "Jarvis open GitHub"
 - "Jarvis search for `<query>`" / "google `<query>`" / "look up `<query>`" /
-  "find information about `<query>`" / "search the web for `<query>`"
+  "find information about `<query>`" / "search the web for `<query>`" /
+  "search Google for `<query>`" / "search on Google for `<query>`" (Phase 8)
 - Politeness wrappers all work, including stacked ones: "could you open
   Chrome for me", "can you open YouTube", "please open YouTube", "would
   you open Chrome", "I want you to open Chrome", "could you please
@@ -329,11 +458,13 @@ LLM or external API is involved.
   "make the volume louder" / "turn it up" / "make it louder"
 - "Jarvis volume down" / "decrease volume" / "turn the volume down" /
   "make the volume quieter" / "turn it down" / "make it quieter" / "make it softer"
-- "Jarvis set volume to 40 percent" / "set volume to 40%" (Phase 7) - true,
-  absolute system volume via Windows Core Audio. Valid range is 0-100
-  inclusive (0 -> scalar 0.0, 40 -> scalar 0.4, 100 -> scalar 1.0);
-  anything outside that range, or not a plain 1-3 digit integer, is
-  rejected outright rather than clamped - see Safety & Limitations below.
+- "Jarvis set volume to 40 percent" / "set volume to 40%" / "make the volume
+  40 percent" / "turn the volume to 40 percent" / "change the volume to 40
+  percent" (verb forms other than "set" added in Phase 8) - true, absolute
+  system volume via Windows Core Audio. Valid range is 0-100 inclusive
+  (0 -> scalar 0.0, 40 -> scalar 0.4, 100 -> scalar 1.0); anything
+  outside that range, or not a plain 1-3 digit integer, is rejected
+  outright rather than clamped - see Safety & Limitations below.
 - "Jarvis mute the computer" / "Jarvis unmute" - true, absolute mute/unmute
   via Core Audio (Phase 7), idempotent: "mute" always mutes and "unmute"
   always unmutes, regardless of the system's current state - see Safety
@@ -342,6 +473,9 @@ LLM or external API is involved.
 ### Media
 - "Jarvis play" / "Jarvis pause" (toggles play/pause), "play the music", "pause the music"
 - "Jarvis next track" / "Jarvis previous track" / "skip this song" / "go to the next track"
+- "Jarvis stop the music" / "stop the song" / "stop playing" (Phase 8) - maps
+  onto the existing play/pause toggle above; there is no separate "stop"
+  capability
 
 ### Screenshot
 - "Jarvis take a screenshot" / "Jarvis screenshot" / "Jarvis capture screen" /
@@ -427,22 +561,27 @@ automated tests:
 python -m pytest -q
 ```
 
-**Exact result as of the last verified run (Phase 7):** `346 passed, 2
-warnings in 0.50s` - `0 failed`, `0 skipped`. The 2 warnings are
+**Exact result as of the last verified run (Phase 8):** `405 passed, 2
+warnings in 0.75s` - `0 failed`, `0 skipped`. The 2 warnings are
 pre-existing, unrelated `DeprecationWarning`s from inside the
 `speech_recognition` package itself (`aifc`, `audioop`), not from this
 project's code. A dedicated safety-net verification pass - mocking
 every real Windows/COM entry point independently of what each test
 patches itself - confirmed zero real Core Audio COM calls, zero real
 Windows API (`user32`) calls, zero `subprocess.Popen`/`os.system`
-calls, and zero keyboard-injection calls across the full suite.
+calls, and zero keyboard-injection calls across the full suite. (This
+pass caught and fixed one real, unmocked `keybd_event` call during
+Phase 8 test development itself - see the Phase 8 section above for
+why that risk exists structurally in this codebase, and
+`tests/test_security.py` for the corrected, fully-mocked test.)
 
 Phase 5 baseline was `170 passed` (verified before any Phase 5 change
 was made); Phase 5 finished at `259 passed`. Phase 6 (targeted window
 control by application name) finished at `288 passed`. Phase 7
-(absolute volume + true mute/unmute via Core Audio) added 58 tests,
-finishing at `346 passed` - none removed or weakened, 0 failures at
-any phase boundary.
+(absolute volume + true mute/unmute via Core Audio) finished at `346
+passed`. Phase 8 (natural-language synonym extensions + bounded
+multi-clause chaining) added 59 tests, finishing at `405 passed` - none
+removed or weakened, 0 failures at any phase boundary.
 
 ### Manual tests actually performed (Phase 5)
 

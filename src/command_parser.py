@@ -37,15 +37,21 @@ VOLUME_DOWN_WORDS = re.compile(r"\b(down|decrease|lower|reduce|quieter|softer)\b
 UNMUTE_WORD = re.compile(r"\bunmute\b")
 MUTE_WORD = re.compile(r"\bmute\b")
 
-# Phase 7: absolute volume. Deliberately narrow - only "set volume to
-# <1-3 digits> percent" or "...to <1-3 digits>%", with the percent/%
-# marker required (never a bare number), so this can never accidentally
-# match unrelated phrasing. The number is capped at 3 digits by the
-# regex itself, so something like "999999999999 percent" can never
-# match at all (there's no position where 1-3 digits are immediately
-# followed by "percent"/"%" and the end of the string).
+# Phase 7 (extended in Phase 8): absolute volume. Deliberately narrow -
+# only "<set|make|turn|change> (the) volume (to) <1-3 digits> percent"
+# or "...<1-3 digits>%", with the percent/% marker required (never a
+# bare number), so this can never accidentally match unrelated phrasing.
+# The number is capped at 3 digits by the regex itself, so something
+# like "999999999999 percent" can never match at all (there's no
+# position where 1-3 digits are immediately followed by "percent"/"%"
+# and the end of the string). "to" is optional so "make the volume 40
+# percent" (no "to") matches alongside "set volume to 40 percent" -
+# this never widens what's accepted for a phrase with NO digits (e.g.
+# "turn the volume up" still can't match this pattern at all, since
+# \d{1,3} has nothing to match), so it can't collide with the separate
+# up/down handling in canonicalize_volume_phrase() below.
 SET_VOLUME_PATTERN = re.compile(
-    r"^set (?:the )?volume to\s+(\d{1,3})\s*(?:percent|%)$"
+    r"^(?:set|make|turn|change) (?:the )?volume(?: to)?\s+(\d{1,3})\s*(?:percent|%)$"
 )
 
 # Exact-phrase-only ("^...$") pronoun references to volume, e.g. "turn it
@@ -58,9 +64,13 @@ VOLUME_PRONOUN_DOWN = re.compile(
 )
 
 # Checked in order; first match wins. "search for X" is deliberately left
-# alone (no rule here matches it) since it is already canonical.
+# alone (no rule here matches it) since it is already canonical. The
+# "search (on) google for X" rule (Phase 8) must precede the generic
+# "search X" rule below, or the generic rule would fire first and leave
+# "google for" wrongly embedded in the query text.
 SEARCH_PREFIX_RULES = [
     (re.compile(r"^search the web for\s+"), "search for "),
+    (re.compile(r"^search (?:on )?google for\s+"), "search for "),
     (re.compile(r"^look up\s+"), "search for "),
     (re.compile(r"^find information about\s+"), "search for "),
     (re.compile(r"^google\s+"), "search for "),
@@ -203,10 +213,24 @@ def canonicalize_desktop_phrase(text):
 def canonicalize_media_phrase(text):
     """Rewrite 'skip' (as in skip this song/track) into the 'next track'
     phrasing media_control.handle() expects. 'go to the next track'
-    already contains 'next track' as a substring and needs no rewrite."""
+    already contains 'next track' as a substring and needs no rewrite.
+
+    Phase 8: 'stop the music'/'stop the song'/'stop playing' are
+    rewritten to 'pause' - there is no separate "stop" capability
+    anywhere in this codebase, only the existing play/pause toggle
+    (media_control.play_pause(), VK_MEDIA_PLAY_PAUSE), so this maps
+    onto that already-supported command rather than inventing a new
+    one. Bare 'stop' with no music/song/playing word is deliberately
+    NOT matched - it's too ambiguous (could mean anything) to guess at.
+    """
 
     if "skip" in text:
         return "next track"
+
+    if "stop" in text and (
+        "music" in text or "song" in text or "playing" in text
+    ):
+        return "pause"
 
     return text
 

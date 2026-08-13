@@ -4,6 +4,7 @@ import commands
 import media_control
 import volume_control
 import keyboard_control
+import window_control
 
 
 class FakeVoice:
@@ -586,3 +587,344 @@ def test_copy_command():
 
     assert result is True
     mock_combo.assert_called_once()
+
+
+# ---------------------------------------------------------------------
+# PHASE 8: natural-language synonyms (end-to-end)
+# ---------------------------------------------------------------------
+
+def test_please_open_chrome_command():
+    processor, voice = make_processor()
+
+    with patch("web_control.os.path.exists", return_value=False), \
+         patch("web_control.webbrowser.open") as mock_open:
+        result = processor.process("please open chrome")
+
+    assert result is True
+    mock_open.assert_called_once_with("https://www.google.com")
+
+
+def test_could_you_open_chrome_command():
+    processor, voice = make_processor()
+
+    with patch("web_control.os.path.exists", return_value=False), \
+         patch("web_control.webbrowser.open") as mock_open:
+        result = processor.process("could you open chrome")
+
+    assert result is True
+    mock_open.assert_called_once_with("https://www.google.com")
+
+
+def test_launch_chrome_command():
+    processor, voice = make_processor()
+
+    with patch("web_control.os.path.exists", return_value=False), \
+         patch("web_control.webbrowser.open") as mock_open:
+        result = processor.process("launch chrome")
+
+    assert result is True
+    mock_open.assert_called_once_with("https://www.google.com")
+
+
+def test_start_chrome_command():
+    processor, voice = make_processor()
+
+    with patch("web_control.os.path.exists", return_value=False), \
+         patch("web_control.webbrowser.open") as mock_open:
+        result = processor.process("start chrome")
+
+    assert result is True
+    mock_open.assert_called_once_with("https://www.google.com")
+
+
+# ---------------------------------------------------------------------
+# PHASE 8: volume (end-to-end)
+# ---------------------------------------------------------------------
+
+def test_turn_volume_up_command():
+    processor, voice = make_processor()
+
+    with patch("volume_control.input_control.press_key") as mock_press:
+        result = processor.process("turn volume up")
+
+    assert result is True
+    mock_press.assert_called_once_with(volume_control.input_control.VK_VOLUME_UP)
+
+
+def test_turn_volume_down_command():
+    processor, voice = make_processor()
+
+    with patch("volume_control.input_control.press_key") as mock_press:
+        result = processor.process("turn volume down")
+
+    assert result is True
+    mock_press.assert_called_once_with(volume_control.input_control.VK_VOLUME_DOWN)
+
+
+def test_make_the_volume_40_percent_command():
+    processor, voice = make_processor()
+
+    with patch("volume_control.audio_endpoint.set_volume_percent") as mock_set:
+        result = processor.process("make the volume 40 percent")
+
+    assert result is True
+    mock_set.assert_called_once_with(40)
+
+
+def test_set_volume_to_0_command():
+    processor, voice = make_processor()
+
+    with patch("volume_control.audio_endpoint.set_volume_percent") as mock_set:
+        result = processor.process("set volume to 0 percent")
+
+    assert result is True
+    mock_set.assert_called_once_with(0)
+
+
+def test_set_volume_to_100_command():
+    processor, voice = make_processor()
+
+    with patch("volume_control.audio_endpoint.set_volume_percent") as mock_set:
+        result = processor.process("set volume to 100 percent")
+
+    assert result is True
+    mock_set.assert_called_once_with(100)
+
+
+def test_make_the_volume_invalid_values_never_reach_core_audio():
+    processor, voice = make_processor()
+
+    for phrase in [
+        "make the volume 150 percent",
+        "make the volume -10 percent",
+        "turn the volume to 40.5 percent",
+        "change the volume to forty percent",
+        "turn the volume to 999999999999999999 percent",
+    ]:
+        with patch(
+            "volume_control.audio_endpoint.set_volume_percent"
+        ) as mock_set:
+            result = processor.process(phrase)
+
+        assert result is True, phrase
+        mock_set.assert_not_called()
+        assert "don't know how to do that" in voice.spoken[-1]
+
+
+# ---------------------------------------------------------------------
+# PHASE 8: mute/unmute synonyms (end-to-end)
+# ---------------------------------------------------------------------
+
+def test_mute_the_computer_synonym_command():
+    processor, voice = make_processor()
+
+    with patch("volume_control.audio_endpoint.set_mute") as mock_mute:
+        result = processor.process("mute the computer")
+
+    assert result is True
+    mock_mute.assert_called_once_with(True)
+
+
+def test_please_mute_command():
+    processor, voice = make_processor()
+
+    with patch("volume_control.audio_endpoint.set_mute") as mock_mute:
+        result = processor.process("please mute")
+
+    assert result is True
+    mock_mute.assert_called_once_with(True)
+
+
+def test_unmute_the_computer_synonym_command():
+    processor, voice = make_processor()
+
+    with patch("volume_control.audio_endpoint.set_mute") as mock_mute:
+        result = processor.process("unmute the computer")
+
+    assert result is True
+    mock_mute.assert_called_once_with(False)
+
+
+def test_please_unmute_command():
+    processor, voice = make_processor()
+
+    with patch("volume_control.audio_endpoint.set_mute") as mock_mute:
+        result = processor.process("please unmute")
+
+    assert result is True
+    mock_mute.assert_called_once_with(False)
+
+
+# ---------------------------------------------------------------------
+# PHASE 8: window controls (end-to-end, regression confirmation)
+# ---------------------------------------------------------------------
+
+def test_close_this_window_command():
+    processor, voice = make_processor()
+
+    with patch("window_control.user32.GetForegroundWindow", return_value=1), \
+         patch("window_control.user32.PostMessageW") as mock_post:
+        result = processor.process("close this window")
+
+    assert result is True
+    mock_post.assert_called_once()
+
+
+def test_minimize_this_window_command_phase8():
+    processor, voice = make_processor()
+
+    with patch("window_control.user32.GetForegroundWindow", return_value=1), \
+         patch("window_control.user32.ShowWindow") as mock_show:
+        result = processor.process("minimize this window")
+
+    assert result is True
+    mock_show.assert_called_once_with(1, window_control.SW_MINIMIZE)
+
+
+def test_maximize_this_window_command():
+    processor, voice = make_processor()
+
+    with patch("window_control.user32.GetForegroundWindow", return_value=1), \
+         patch("window_control.user32.ShowWindow") as mock_show:
+        result = processor.process("maximize this window")
+
+    assert result is True
+    mock_show.assert_called_once_with(1, window_control.SW_MAXIMIZE)
+
+
+# ---------------------------------------------------------------------
+# PHASE 8: search synonyms (end-to-end)
+# ---------------------------------------------------------------------
+
+def test_search_google_for_python_command():
+    processor, voice = make_processor()
+
+    with patch("web_control.webbrowser.open") as mock_open:
+        result = processor.process("search google for python")
+
+    assert result is True
+    mock_open.assert_called_once_with(
+        "https://www.google.com/search?q=python"
+    )
+
+
+def test_google_python_command_phase8():
+    processor, voice = make_processor()
+
+    with patch("web_control.webbrowser.open") as mock_open:
+        result = processor.process("google python")
+
+    assert result is True
+    mock_open.assert_called_once_with(
+        "https://www.google.com/search?q=python"
+    )
+
+
+# ---------------------------------------------------------------------
+# PHASE 8: ambiguous inputs - must be rejected, never guessed
+# ---------------------------------------------------------------------
+
+def test_ambiguous_inputs_are_rejected_with_no_side_effects():
+    """None of these have a deterministic mapping to an existing
+    canonical command - each must fall through to the standard unknown-
+    command response, with zero real actions of any kind triggered."""
+
+    ambiguous_phrases = [
+        "do something",
+        "make it better",
+        "open something",
+        "volume high",
+    ]
+
+    for phrase in ambiguous_phrases:
+        processor, voice = make_processor()
+
+        with patch("system_control.subprocess.Popen") as mock_popen, \
+             patch("system_control.os.system") as mock_system, \
+             patch(
+                 "volume_control.audio_endpoint.set_volume_percent"
+             ) as mock_vol, \
+             patch("volume_control.audio_endpoint.set_mute") as mock_mute, \
+             patch("web_control.webbrowser.open") as mock_open:
+            result = processor.process(phrase)
+
+        assert result is True, phrase
+        assert "don't know how to do that" in voice.spoken[-1], phrase
+        mock_popen.assert_not_called()
+        mock_system.assert_not_called()
+        mock_vol.assert_not_called()
+        mock_mute.assert_not_called()
+        mock_open.assert_not_called()
+
+
+def test_maybe_mute_it_is_handled_by_pre_existing_word_matching():
+    """NOT an ambiguity-rejection case: 'maybe mute it' contains the
+    whole word 'mute', which canonicalize_volume_phrase() has matched
+    since Phase 5 (pre-dating Phase 8) via MUTE_WORD = r'\\bmute\\b' -
+    this is pre-existing, already-tested behavior, unrelated to and
+    unmodified by Phase 8, documented here so it isn't mistaken for a
+    Phase 8 regression or a missed ambiguity case."""
+
+    processor, voice = make_processor()
+
+    with patch("volume_control.audio_endpoint.set_mute") as mock_mute:
+        result = processor.process("maybe mute it")
+
+    assert result is True
+    mock_mute.assert_called_once_with(True)
+
+
+# ---------------------------------------------------------------------
+# PHASE 8: multi-clause chaining (end-to-end)
+# ---------------------------------------------------------------------
+
+def test_open_notepad_and_mute_chains_both_actions():
+    processor, voice = make_processor()
+
+    with patch("system_control.subprocess.Popen") as mock_popen, \
+         patch("volume_control.audio_endpoint.set_mute") as mock_mute:
+        result = processor.process("open notepad and mute")
+
+    assert result is True
+    mock_popen.assert_called_once_with(["notepad.exe"], shell=False)
+    mock_mute.assert_called_once_with(True)
+
+
+def test_search_for_bed_and_breakfast_is_not_wrongly_split():
+    """'and' here is part of the search query, not a conjunction
+    between two commands - the all-or-nothing split safety must leave
+    this phrase whole."""
+
+    processor, voice = make_processor()
+
+    with patch("web_control.webbrowser.open") as mock_open:
+        result = processor.process("search for bed and breakfast")
+
+    assert result is True
+    mock_open.assert_called_once_with(
+        "https://www.google.com/search?q=bed+and+breakfast"
+    )
+
+
+def test_chained_command_with_dangerous_second_clause_is_not_split():
+    """'delete everything' has no known command mapping, so the whole
+    phrase must stay unsplit (verified via natural_language directly in
+    test_natural_language.py). Once unsplit, this is processed exactly
+    like any other single command containing the bare substring
+    'chrome': web_control.handle() opens Chrome (a safe, hardcoded
+    action) and the 'and delete everything' suffix is simply discarded
+    text, never executed or passed to any dangerous sink - the same
+    "dangerous suffix is discarded" property already verified for
+    non-chained commands elsewhere in test_security.py (e.g. "close
+    chrome and then format the c drive")."""
+
+    processor, voice = make_processor()
+
+    with patch("system_control.subprocess.Popen") as mock_popen, \
+         patch("web_control.webbrowser.open") as mock_open, \
+         patch("web_control.os.path.exists", return_value=False):
+        result = processor.process("open chrome and delete everything")
+
+    assert result is True
+    mock_popen.assert_not_called()
+    mock_open.assert_called_once_with("https://www.google.com")

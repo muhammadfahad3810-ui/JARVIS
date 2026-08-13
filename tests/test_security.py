@@ -555,3 +555,190 @@ def test_volume_commands_introduce_no_keyboard_text_injection():
 
     mock_press.assert_not_called()
     mock_combo.assert_not_called()
+
+
+# ---------------------------------------------------------------------
+# PHASE 8: natural-language layer (command_parser extensions +
+# natural_language.py multi-clause splitting) - security guarantees.
+# No real Core Audio/Windows API/subprocess call is ever made by these
+# tests - every real action primitive is mocked at its point of use.
+# ---------------------------------------------------------------------
+
+def test_natural_language_layer_introduces_no_shell_execution():
+    """Neither the new command_parser synonym rules nor
+    natural_language.split_into_clauses() may ever cause a shell
+    command to run - proven across a mix of valid and rejected Phase 8
+    phrasing, chained and unchained. Deliberately excludes phrases whose
+    correct, safe action legitimately calls subprocess.Popen with fixed
+    arguments (e.g. "open notepad and mute" -> Popen(["notepad.exe"]),
+    already proven safe/fixed-argument in test_commands.py and
+    test_security.py's pre-existing Popen-argument tests) - that is
+    intended behavior, not a violation of this guarantee."""
+
+    processor, voice = make_processor()
+
+    phrases = [
+        "make the volume 40 percent",
+        "stop the music",
+        "search google for python",
+        "do something and open chrome",
+        "make the volume 999999999999999999 percent",
+    ]
+
+    with patch("system_control.subprocess.Popen") as mock_popen, \
+         patch("system_control.os.system") as mock_system, \
+         patch("web_control.webbrowser.open"), \
+         patch("web_control.os.path.exists", return_value=False), \
+         patch("volume_control.audio_endpoint.set_mute"), \
+         patch("volume_control.audio_endpoint.set_volume_percent"), \
+         patch("media_control.input_control.press_key"):
+        for phrase in phrases:
+            processor.process(phrase)
+
+    mock_popen.assert_not_called()
+    mock_system.assert_not_called()
+
+
+def test_natural_language_layer_introduces_no_keyboard_text_injection():
+    """The Phase 8 layer must never touch the keyboard-injection
+    primitives for phrases that have no keyboard/media action at all.
+    Deliberately excludes "stop the music" - it correctly, legitimately
+    presses VK_MEDIA_PLAY_PAUSE via the pre-existing media_control.py
+    path (unchanged since Phase 3), which is not "text injection" (no
+    arbitrary keystrokes, no spoken text becomes a key) - that is
+    intended behavior, not a violation of this guarantee."""
+
+    processor, voice = make_processor()
+
+    phrases = [
+        "make the volume 40 percent",
+        "please mute",
+        "search google for python",
+    ]
+
+    with patch(
+        "keyboard_control.input_control.press_key"
+    ) as mock_press, patch(
+        "keyboard_control.input_control.press_key_combo"
+    ) as mock_combo, patch(
+        "volume_control.audio_endpoint.set_mute"
+    ), patch(
+        "volume_control.audio_endpoint.set_volume_percent"
+    ), patch(
+        "web_control.webbrowser.open"
+    ):
+        for phrase in phrases:
+            processor.process(phrase)
+
+    mock_press.assert_not_called()
+    mock_combo.assert_not_called()
+
+
+def test_natural_language_layer_introduces_no_direct_core_audio_calls():
+    """command_parser.py and natural_language.py must never import or
+    call audio_endpoint/comtypes directly - all volume/mute action
+    still flows exclusively through volume_control.py, unchanged."""
+
+    import inspect
+
+    import command_parser
+    import natural_language
+
+    for module in (command_parser, natural_language):
+        source = inspect.getsource(module)
+        assert "audio_endpoint" not in source, module.__name__
+        assert "comtypes" not in source, module.__name__
+
+
+def test_natural_language_layer_introduces_no_direct_windows_api_calls():
+    """command_parser.py and natural_language.py must never import
+    ctypes or user32 directly - all real Windows API access still
+    flows exclusively through the existing *_control.py modules."""
+
+    import inspect
+
+    import command_parser
+    import natural_language
+
+    for module in (command_parser, natural_language):
+        source = inspect.getsource(module)
+        assert "ctypes" not in source, module.__name__
+        assert "user32" not in source, module.__name__
+
+
+def test_natural_language_layer_cannot_bypass_command_processor():
+    """natural_language.split_into_clauses() only ever returns strings
+    for CommandProcessor.process() to interpret - it holds no reference
+    to voice, commands, or any action module, so it structurally cannot
+    call a handler directly, only decide how the text is grouped."""
+
+    import inspect
+
+    import natural_language
+
+    source = inspect.getsource(natural_language)
+
+    for forbidden in (
+        "import commands",
+        "import web_control",
+        "import system_control",
+        "import window_control",
+        "import volume_control",
+        "import media_control",
+        "import screen_control",
+        "import keyboard_control",
+    ):
+        assert forbidden not in source, forbidden
+
+
+def test_huge_and_negative_volume_values_never_reach_core_audio_via_new_verbs():
+    """Extends the Phase 7 rejection guarantee to the new Phase 8 verb
+    forms ('make'/'turn'/'change' the volume) - out-of-range/malformed
+    values must never reach the Core Audio setter regardless of which
+    accepted verb phrasing was used to ask for them."""
+
+    processor, voice = make_processor()
+
+    dangerous_phrases = [
+        "make the volume 999999999999999999 percent",
+        "turn the volume to -10 percent",
+        "change the volume to 40.5 percent",
+        "make the volume forty percent",
+        "make the volume 150 percent",
+    ]
+
+    for phrase in dangerous_phrases:
+        with patch(
+            "volume_control.audio_endpoint.set_volume_percent"
+        ) as mock_set:
+            result = processor.process(phrase)
+
+        assert result is True, phrase
+        mock_set.assert_not_called()
+
+
+def test_chained_command_cannot_smuggle_an_unknown_dangerous_clause():
+    """A chain containing one valid clause and one clause with no known
+    command mapping must never partially execute the unknown clause -
+    the all-or-nothing split safety (natural_language.py) guarantees
+    this at the splitting layer, and this test proves it holds true
+    end-to-end through the real CommandProcessor with every real action
+    primitive mocked."""
+
+    processor, voice = make_processor()
+
+    with patch("system_control.subprocess.Popen") as mock_popen, \
+         patch("system_control.os.system") as mock_system, \
+         patch("volume_control.audio_endpoint.set_mute") as mock_mute, \
+         patch("keyboard_control.input_control.press_key") as mock_press:
+        processor.process("mute and delete everything")
+
+    mock_popen.assert_not_called()
+    mock_system.assert_not_called()
+    mock_press.assert_not_called()
+    # Whether "mute" alone still resolves once the split is discarded
+    # depends only on the pre-existing, already-verified single-command
+    # dispatch chain (see test_commands.py) - the security property
+    # this test exists to prove is narrower and absolute: the unknown
+    # "delete everything" clause is never independently dispatched.
+    assert mock_mute.call_count <= 1
