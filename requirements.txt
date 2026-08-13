@@ -1,0 +1,10 @@
+SpeechRecognition==3.17.0
+pyttsx3==2.99
+PyAudio==0.2.14
+pywin32==312
+pypiwin32==223
+comtypes==1.4.16
+Pillow==12.3.0
+
+# Dev / testing only
+pytest==9.1.1
