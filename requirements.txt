@@ -6,5 +6,12 @@ pypiwin32==223
 comtypes==1.4.16
 Pillow==12.3.0
 
+# Phase 11.13: pretrained neural TTS (Kokoro-82M) - optional, gated
+# behind config.TTS_BACKEND/tts_backend.KokoroBackend.is_available().
+# JARVIS falls back to pyttsx3 (above) if these aren't installed or the
+# model files (see README.md) haven't been downloaded - see voice.py.
+kokoro-onnx==0.5.0
+onnxruntime==1.29.0
+
 # Dev / testing only
 pytest==9.1.1

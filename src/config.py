@@ -55,8 +55,62 @@ COMMAND_RECOGNITION_RETRIES = 1
 REQUEST_ERROR_ANNOUNCE_COOLDOWN = 30
 
 # Text-to-speech
+#
+# TTS_RATE/TTS_VOLUME (unchanged since the original single-file
+# version) configure the pyttsx3 (Windows SAPI5) fallback engine only -
+# see voice.Voice.__init__(). TTS_VOLUME is ALSO applied to the neural
+# backend's synthesized audio (see tts_backend.KokoroBackend.speak()),
+# so both engines respect the same single volume knob; TTS_RATE has no
+# neural-backend equivalent (see TTS_SPEED below instead - pyttsx3's
+# "words per minute" and Kokoro's speech-rate multiplier are different
+# units, so this project intentionally keeps them as two separate
+# config values rather than trying to convert between them).
 TTS_RATE = 175
 TTS_VOLUME = 1.0
+
+# Phase 11.13: pretrained neural TTS (Kokoro-82M, via kokoro-onnx - see
+# tts_backend.py). "kokoro" tries the neural backend first and falls
+# back to pyttsx3 on ANY failure (missing dependency, missing model
+# files - never committed to this repo, see README.md - or a
+# synthesis/playback error); "pyttsx3" skips the neural backend
+# entirely and reproduces the exact original Phase 1-11.12 behavior.
+# Default "kokoro" - safe even before the model is downloaded, since
+# tts_backend.KokoroBackend.is_available() reports False (not an
+# error) until both model files exist on disk, and voice.Voice falls
+# back to pyttsx3 in that case exactly as if this were "pyttsx3".
+TTS_BACKEND = "kokoro"
+
+# One of kokoro_onnx's ~54 built-in voices (American/British English,
+# plus several other languages - see the Phase 11.13 audit report for
+# the full list). "af_heart" was chosen after listening to several
+# candidates as the warmest/most natural-sounding of Kokoro's American
+# English voices for this project's "calm, pleasant, slightly warm"
+# requirement - see tts_backend.KokoroBackend.synthesize()'s `voice`
+# parameter.
+TTS_VOICE = "af_heart"
+
+# Kokoro's speech-rate multiplier (1.0 = the model's natural default
+# pace, NOT the same unit as TTS_RATE's "words per minute" - see that
+# constant's own comment above).
+TTS_SPEED = 1.0
+
+# ONNX Runtime execution provider for the neural backend. Deliberately
+# "cpu", NOT "cuda", by default - matching OFFLINE_STT_DEVICE's own
+# precedent and reasoning exactly (see that constant below): this
+# machine's NVIDIA driver reports CUDA 13.2 support, but attempting the
+# CUDAExecutionProvider fails with "Error loading ... which depends on
+# 'cublasLt64_13.dll' which is missing" - the actual CUDA Toolkit
+# runtime/cuDNN libraries aren't installed, only the driver. Measured
+# CPU-only latency is already well within acceptable range for this
+# project's short spoken responses (see the Phase 11.13 audit report),
+# so this is not currently a blocker. Setting this to "cuda" is safe
+# either way - tts_backend.KokoroBackend._load() lists
+# CPUExecutionProvider as a fallback, and onnxruntime itself silently
+# falls back (a console warning, not an exception) if CUDA can't
+# actually load - but it won't actually use the GPU until the missing
+# runtime libraries are installed, a separate, approval-gated
+# dependency decision exactly like OFFLINE_STT_DEVICE's own.
+TTS_DEVICE = "cpu"
 
 # Diagnostics - when True, prints extra pipeline details (normalized
 # command, wake-word match info) to the console. Off by default so

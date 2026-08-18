@@ -38,6 +38,11 @@ dist/
 *.tmp
 *.temp
 
+# Pretrained model weights (downloaded, not source - see README for how
+# to fetch them) and any generated audio output
+models/
+*.wav
+
 # OS files
 Thumbs.db
 .DS_Store

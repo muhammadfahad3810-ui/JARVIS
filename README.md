@@ -1284,3 +1284,69 @@ from Phase 5 through Phase 10.6.
   that a specific phrase is actually recognized by Google's speech API
   and routed correctly, that requires running `python src\jarvis.py`
   and speaking it yourself.
+
+## Phase 11.13 — Pretrained Neural TTS
+
+`voice.Voice` now tries a pretrained neural TTS backend (Kokoro-82M,
+via the `kokoro-onnx` package - MIT-licensed wrapper, Apache-2.0-licensed
+model weights) before falling back to the original pyttsx3 (Windows
+SAPI5) engine every phase before this one used exclusively. The
+fallback is unconditional: a missing dependency, missing model files,
+or any synthesis/playback error all fall straight through to pyttsx3 -
+see `voice.py`/`tts_backend.py`'s own docstrings. No other module
+changed - every `voice.speak(text)` call site in the codebase is
+untouched.
+
+### Setup (the neural voice is optional)
+
+`kokoro-onnx`/`onnxruntime` are in `requirements.txt` and installed by
+`pip install -r requirements.txt` like everything else, but the
+**pretrained model weights are NOT committed to this repository** (see
+`.gitignore`'s `models/` entry) - without them, JARVIS runs exactly as
+it always has, on pyttsx3 alone; nothing breaks. To enable the neural
+voice, download these two files (Apache 2.0 licensed) into
+`models/tts/`:
+
+```
+models/tts/kokoro-v1.0.onnx   <- https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.0/kokoro-v1.0.onnx
+models/tts/voices-v1.0.bin    <- https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.0/voices-v1.0.bin
+```
+
+### Configuration (`src/config.py`)
+
+- `TTS_BACKEND` - `"kokoro"` (default) or `"pyttsx3"` (skips the neural
+  backend entirely, byte-for-byte the original behavior).
+- `TTS_VOICE` - one of kokoro-onnx's ~54 built-in voices (default
+  `"af_heart"` - chosen as the warmest/most natural of the American
+  English options for this project's "calm, pleasant" requirement).
+- `TTS_SPEED` - Kokoro's speech-rate multiplier (1.0 = natural pace) -
+  a different unit from `TTS_RATE`'s pyttsx3 "words per minute", kept
+  as a separate setting rather than converted between the two engines.
+- `TTS_DEVICE` - `"cpu"` (default) or `"cuda"`. See that constant's own
+  comment in `config.py`: this machine's NVIDIA driver reports CUDA
+  13.2 support, but the CUDA Toolkit/cuDNN runtime libraries aren't
+  installed, so `CUDAExecutionProvider` fails to load and onnxruntime
+  silently falls back to CPU (a console warning, not a crash) - the
+  exact same situation `OFFLINE_STT_DEVICE` already documents for
+  faster-whisper. Measured CPU-only latency is already acceptable for
+  this project's short spoken responses (see below).
+- `TTS_VOLUME` - shared between both engines (pyttsx3's own volume
+  property, and applied as a gain multiplier to Kokoro's synthesized
+  audio before playback).
+
+### Measured latency (this machine, CPU-only, `af_heart`)
+
+Synthesis time for the project's own short spoken responses, first
+call included (pays model-load + provider warmup once):
+
+| Phrase | Synthesis time |
+|---|---|
+| "Yes?" (first call, cold) | ~2.7s |
+| "Opening Chrome." | ~0.7-1.0s |
+| "Closing tab." | ~0.8s |
+| "Going back." | ~0.7s |
+| A ~35-word sentence | ~6s (audio itself is ~11s long - faster than real-time) |
+
+Every typical JARVIS response (a handful of words) synthesizes in
+under a second after the one-time model-load cost, which is comparable
+to pyttsx3's own already-blocking `runAndWait()` latency.
