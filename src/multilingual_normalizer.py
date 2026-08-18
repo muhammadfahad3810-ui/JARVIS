@@ -467,7 +467,12 @@ SCROLL_DOWN_MARKERS = (
 # need markers here, same "English already covered upstream" reasoning
 # SCROLL_UP_MARKERS/SCROLL_DOWN_MARKERS above already use.
 NEW_TAB_MARKERS = ("naya tab kholo", "nya tab kholo", "new tab kholo")
-CLOSE_TAB_MARKERS = ("tab band karo", "tab band kar do")
+# "tab band" (Phase 11.12): a common clipped/STT-truncated form with no
+# trailing helper verb ("karo"/"kar do") - still a distinct, unambiguous
+# two-word phrase (never bare "band" alone), same "phrase, not a single
+# generic helper word" discipline this module's docstring requires of
+# every marker here.
+CLOSE_TAB_MARKERS = ("tab band karo", "tab band kar do", "tab band")
 
 # Browser navigation (Roman-Urdu). Phase 11.12: added "aage jao" (a
 # common alternate spelling of "aagay jao"), "aglay page par jao"

@@ -4488,3 +4488,169 @@ def test_press_delete_still_unrecognized_after_phase_11_12():
     assert result is True
     mock_press.assert_not_called()
     assert "don't know how to do that" in voice.spoken[-1]
+
+
+# =======================================================================
+# PHASE 11.12 (round 2): "closed tab" past-tense STT variant + bare
+# Roman-Urdu "tab band" - live-test follow-up.
+# =======================================================================
+
+def test_closed_tab_is_close_tab_not_press_tab():
+    processor, voice = make_processor()
+
+    with patch("web_control.input_control.press_key_combo") as mock_web_combo, \
+         patch("keyboard_control.input_control.press_key") as mock_key_press:
+        result = processor.process("closed tab")
+
+    assert result is True
+    mock_key_press.assert_not_called()
+    mock_web_combo.assert_called_once_with(
+        input_control.VK_CONTROL, input_control.VK_KEY_W
+    )
+    assert voice.spoken == ["Closing tab."]
+
+
+def test_closed_tab_result_is_not_pressing_tab_message():
+    processor, voice = make_processor()
+
+    with patch("web_control.input_control.press_key_combo", return_value=True):
+        processor.process("closed tab")
+
+    assert "Pressing Tab." not in voice.spoken
+
+
+def test_closed_the_tab_is_close_tab():
+    processor, voice = make_processor()
+
+    with patch("web_control.input_control.press_key_combo") as mock_web_combo:
+        result = processor.process("closed the tab")
+
+    assert result is True
+    mock_web_combo.assert_called_once_with(
+        input_control.VK_CONTROL, input_control.VK_KEY_W
+    )
+
+
+def test_tab_band_bare_is_close_tab():
+    processor, voice = make_processor()
+
+    with patch.object(config, "ENABLE_MULTILINGUAL_LAYER", True), \
+         patch("web_control.input_control.press_key_combo") as mock_web_combo, \
+         patch("keyboard_control.input_control.press_key") as mock_key_press:
+        result = processor.process("tab band")
+
+    assert result is True
+    mock_key_press.assert_not_called()
+    mock_web_combo.assert_called_once_with(
+        input_control.VK_CONTROL, input_control.VK_KEY_W
+    )
+    assert voice.spoken == ["Closing tab."]
+
+
+# ---- Full precedence sweep (task's explicit "!=" requirements) ----
+
+def test_precedence_close_the_tab_is_never_press_tab():
+    processor, voice = make_processor()
+
+    with patch("web_control.input_control.press_key_combo", return_value=True), \
+         patch("keyboard_control.input_control.press_key") as mock_press:
+        processor.process("close the tab")
+
+    mock_press.assert_not_called()
+
+
+def test_precedence_closed_tab_is_never_press_tab():
+    processor, voice = make_processor()
+
+    with patch("web_control.input_control.press_key_combo", return_value=True), \
+         patch("keyboard_control.input_control.press_key") as mock_press:
+        processor.process("closed tab")
+
+    mock_press.assert_not_called()
+
+
+def test_precedence_close_the_new_tab_is_never_new_tab():
+    """Must resolve to CLOSE_TAB (Ctrl+W), never NEW_TAB (Ctrl+T)."""
+    processor, voice = make_processor()
+
+    with patch("web_control.input_control.press_key_combo") as mock_combo:
+        processor.process("close the new tab")
+
+    mock_combo.assert_called_once_with(
+        input_control.VK_CONTROL, input_control.VK_KEY_W
+    )
+
+
+def test_precedence_open_a_new_tab_is_never_press_tab():
+    processor, voice = make_processor()
+
+    with patch("web_control.input_control.press_key_combo", return_value=True), \
+         patch("keyboard_control.input_control.press_key") as mock_press:
+        processor.process("open a new tab")
+
+    mock_press.assert_not_called()
+
+
+def test_precedence_next_tab_is_never_press_tab():
+    processor, voice = make_processor()
+
+    with patch("web_control.input_control.press_key_combo", return_value=True), \
+         patch("keyboard_control.input_control.press_key") as mock_press:
+        processor.process("next tab")
+
+    mock_press.assert_not_called()
+
+
+def test_precedence_previous_tab_is_never_press_tab():
+    processor, voice = make_processor()
+
+    with patch("web_control.input_control.press_key_combo", return_value=True), \
+         patch("keyboard_control.input_control.press_key") as mock_press:
+        processor.process("previous tab")
+
+    mock_press.assert_not_called()
+
+
+# ---- Negative/ambiguous-command sweep: the new alias/precedence
+# changes must not misclassify unrelated commands ----
+
+def test_enclosed_word_does_not_trigger_close_tab():
+    """"enclosed" must not word-boundary-match the widened "closed?"
+    verb pattern - CLOSE_TAB (Ctrl+W) must never fire for this phrase.
+    (The phrase still legitimately contains the standalone word "tab",
+    so it may still resolve through the PRE-EXISTING, unrelated bare-
+    "tab" PRESS_KEY rescue - that broader behavior is not in this
+    phase's scope; only the CLOSE_TAB false-positive is.)"""
+    processor, voice = make_processor()
+
+    with patch("web_control.input_control.press_key_combo") as mock_combo:
+        processor.process("the enclosed tab is fine")
+
+    mock_combo.assert_not_called()
+
+
+def test_band_alone_does_not_trigger_close_tab():
+    """Bare "band" (no "tab", no "karo") must not be mistaken for
+    "tab band" - CLOSE_TAB_MARKERS only matches the full two-word
+    phrase, never the generic helper word alone."""
+    processor, voice = make_processor()
+
+    with patch.object(config, "ENABLE_MULTILINGUAL_LAYER", True), \
+         patch("web_control.input_control.press_key_combo") as mock_combo:
+        result = processor.process("band")
+
+    mock_combo.assert_not_called()
+
+
+def test_open_chrome_unaffected_by_closed_tab_regex():
+    """Regression guard: the widened "closed?" verb pattern must not
+    affect ordinary Chrome-opening commands."""
+    processor, voice = make_processor()
+
+    with patch("web_control.os.path.exists", return_value=False), \
+         patch("web_control.webbrowser.open") as mock_open:
+        result = processor.process("open chrome")
+
+    assert result is True
+    mock_open.assert_called_once_with("https://www.google.com")
+    assert voice.spoken == ["Opening Chrome."]

@@ -195,6 +195,21 @@ def test_press_key_tab_excluded_for_new_tab_kholo_phrase():
     assert not any(f.intent == intent_layer.Intent.PRESS_KEY for f in frames)
 
 
+def test_press_key_tab_excluded_for_closed_tab_phrase():
+    frames = intent_layer.understand("closed tab")
+    assert not any(f.intent == intent_layer.Intent.PRESS_KEY for f in frames)
+
+
+def test_press_key_tab_excluded_for_closed_the_tab_phrase():
+    frames = intent_layer.understand("closed the tab")
+    assert not any(f.intent == intent_layer.Intent.PRESS_KEY for f in frames)
+
+
+def test_press_key_tab_excluded_for_bare_tab_band_phrase():
+    frames = intent_layer.understand("tab band")
+    assert not any(f.intent == intent_layer.Intent.PRESS_KEY for f in frames)
+
+
 # ---------------------------------------------------------------------
 # Targeted window actions
 # ---------------------------------------------------------------------

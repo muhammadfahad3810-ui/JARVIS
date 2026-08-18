@@ -1558,6 +1558,12 @@ def test_new_tab_kholo_resolves_to_new_tab():
     assert multilingual_normalizer.understand("new tab kholo") == "new tab"
 
 
+def test_bare_tab_band_resolves_to_close_tab():
+    """"tab band" with no trailing helper verb - a common clipped/STT-
+    truncated form of "tab band karo"/"tab band kar do"."""
+    assert multilingual_normalizer.understand("tab band") == "close tab"
+
+
 def test_aage_jao_resolves_to_go_forward():
     assert multilingual_normalizer.understand("aage jao") == "go forward"
 

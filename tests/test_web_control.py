@@ -1,5 +1,6 @@
 from unittest.mock import patch
 
+import config
 import input_control
 import web_control
 
@@ -42,6 +43,111 @@ def test_close_tab_sends_ctrl_w():
         input_control.VK_CONTROL, input_control.VK_KEY_W
     )
     assert voice.spoken == ["Closing tab."]
+
+
+# ---------------------------------------------------------------------
+# Phase 11.11 follow-up: CLOSE_TAB live-action investigation.
+#
+# These go through the REAL, unmocked input_control.press_key_combo()
+# (only the actual OS boundary - user32.SendInput - is mocked), so they
+# prove the literal event sequence close_tab() causes to be injected:
+# Ctrl-down, W-down, W-up, Ctrl-up, in that exact order, with the
+# correct VK codes and KEYEVENTF_KEYUP flags on the right events - not
+# just that "press_key_combo was called with some arguments". The
+# new_tab() version alongside it is a direct, mechanical proof that
+# close_tab() and new_tab() go through byte-identical machinery (same
+# function, same call shape, same event ordering) - the only
+# difference is which second VK code is pressed. If NEW_TAB visibly
+# works against real Chrome and CLOSE_TAB does not, this test result
+# rules out a code-level difference between the two as the cause.
+# ---------------------------------------------------------------------
+
+def _vk_and_up_flag(send_input_call):
+    """Extract (wVk, key_up) from one recorded user32.SendInput() call
+    - `call.args[1]` is the ctypes pointer to the INPUT struct that was
+    actually passed."""
+
+    ki = send_input_call.args[1].contents.union.ki
+    return ki.wVk, bool(ki.dwFlags & input_control.KEYEVENTF_KEYUP)
+
+
+def test_close_tab_sends_exact_ctrl_w_event_sequence_via_real_sendinput():
+    voice = FakeVoice()
+
+    with patch("input_control.user32.SendInput", return_value=1) as mock_send:
+        web_control.close_tab(voice)
+
+    assert [_vk_and_up_flag(c) for c in mock_send.call_args_list] == [
+        (input_control.VK_CONTROL, False),  # Ctrl down
+        (input_control.VK_KEY_W, False),    # W down
+        (input_control.VK_KEY_W, True),     # W up
+        (input_control.VK_CONTROL, True),   # Ctrl up
+    ]
+    assert voice.spoken == ["Closing tab."]
+
+
+def test_new_tab_sends_exact_ctrl_t_event_sequence_via_real_sendinput():
+    """Direct side-by-side comparison with the CLOSE_TAB test above -
+    proves the two actions are mechanically identical apart from the
+    VK code of the second key."""
+    voice = FakeVoice()
+
+    with patch("input_control.user32.SendInput", return_value=1) as mock_send:
+        web_control.new_tab(voice)
+
+    assert [_vk_and_up_flag(c) for c in mock_send.call_args_list] == [
+        (input_control.VK_CONTROL, False),  # Ctrl down
+        (input_control.VK_KEY_T, False),    # T down
+        (input_control.VK_KEY_T, True),     # T up
+        (input_control.VK_CONTROL, True),   # Ctrl up
+    ]
+    assert voice.spoken == ["Opening new tab."]
+
+
+def test_close_tab_debug_logging_is_off_by_default():
+    """config.DEBUG defaults to False - the diagnostic foreground-
+    window logging added for this investigation must never run (zero
+    overhead, zero behavior change) unless explicitly enabled."""
+    voice = FakeVoice()
+
+    with patch("web_control.input_control.press_key_combo", return_value=True), \
+         patch("web_control._debug_foreground_window") as mock_fg:
+        web_control.close_tab(voice)
+
+    mock_fg.assert_not_called()
+
+
+def test_close_tab_debug_logging_prints_foreground_window_before_and_after(capsys):
+    voice = FakeVoice()
+
+    with patch.object(config, "DEBUG", True), \
+         patch("web_control.input_control.press_key_combo", return_value=True), \
+         patch(
+             "web_control._debug_foreground_window",
+             side_effect=[(111, "Terminal"), (222, "Google Chrome")],
+         ):
+        web_control.close_tab(voice)
+
+    output = capsys.readouterr().out
+    assert "close_tab" in output
+    assert "CTRL+W" in output
+    assert "hwnd=111" in output and "Terminal" in output
+    assert "hwnd=222" in output and "Google Chrome" in output
+    assert "ok=True" in output
+
+
+def test_close_tab_reports_failure_if_any_single_event_is_rejected():
+    """Verifies close_tab() genuinely checks press_key_combo()'s real
+    result (which itself requires EVERY one of the 4 events to be
+    accepted - see input_control.press_key_combo()) rather than
+    assuming success from a single call. A rejection on just the FINAL
+    event (Ctrl-up) must still flip the spoken result to failure."""
+    voice = FakeVoice()
+
+    with patch("input_control.user32.SendInput", side_effect=[1, 1, 1, 0]):
+        web_control.close_tab(voice)
+
+    assert voice.spoken == [web_control.INPUT_FAILURE_MESSAGE]
 
 
 def test_next_tab_sends_ctrl_tab():
@@ -340,6 +446,46 @@ def test_handle_close_this_new_tab_is_close_tab():
     mock_combo.assert_called_once_with(
         input_control.VK_CONTROL, input_control.VK_KEY_W
     )
+
+
+# ---------------------------------------------------------------------
+# Phase 11.12 (round 2): "closed tab" - a past-tense STT variant of
+# "close tab" observed live falling through to the bare-Tab rescue.
+# ---------------------------------------------------------------------
+
+def test_handle_closed_tab_is_close_tab():
+    voice = FakeVoice()
+
+    with patch("web_control.input_control.press_key_combo", return_value=True) as mock_combo:
+        handled = web_control.handle("closed tab", voice)
+
+    assert handled is True
+    mock_combo.assert_called_once_with(
+        input_control.VK_CONTROL, input_control.VK_KEY_W
+    )
+    assert voice.spoken == ["Closing tab."]
+
+
+def test_handle_closed_the_tab_is_close_tab():
+    voice = FakeVoice()
+
+    with patch("web_control.input_control.press_key_combo", return_value=True) as mock_combo:
+        handled = web_control.handle("closed the tab", voice)
+
+    assert handled is True
+    mock_combo.assert_called_once_with(
+        input_control.VK_CONTROL, input_control.VK_KEY_W
+    )
+
+
+def test_closed_tab_does_not_false_match_enclosed():
+    """Word-boundary-anchored: "closed?" must not match as a mid-word
+    fragment of an unrelated word like "enclosed"."""
+    voice = FakeVoice()
+
+    handled = web_control.handle("the enclosed tab is fine", voice)
+
+    assert handled is False
 
 
 def test_close_the_tab_never_touches_press_key():

@@ -1,8 +1,10 @@
+import ctypes
 import os
 import re
 import subprocess
 import webbrowser
 
+import config
 import input_control
 
 
@@ -109,50 +111,113 @@ def search(voice, query):
 INPUT_FAILURE_MESSAGE = "I couldn't send that command."
 
 
+def _debug_foreground_window():
+    """DIAGNOSTIC ONLY - never called unless config.DEBUG is True, and
+    never changes any dispatch/execution behavior. Returns (hwnd,
+    title) for whatever window currently has keyboard focus, so a
+    "JARVIS said success but nothing visibly happened" report can be
+    told apart from "the wrong window had focus" - see _log_combo()
+    below. Same plain ctypes/user32 technique window_control.py already
+    uses for its own window introspection (no new dependency)."""
+
+    user32 = ctypes.windll.user32
+    hwnd = user32.GetForegroundWindow()
+    length = user32.GetWindowTextLengthW(hwnd)
+    buffer = ctypes.create_unicode_buffer(length + 1)
+    user32.GetWindowTextW(hwnd, buffer, length + 1)
+    return hwnd, buffer.value
+
+
+def _log_combo(label, keys_desc, before, ok, after):
+    """DIAGNOSTIC ONLY (config.DEBUG) - prints exactly what Phase
+    11.11-follow-up investigation asked for: the foreground window
+    immediately before and after the key combo, the combo itself, and
+    the real (checked, not assumed) SendInput success result. Lets
+    e.g. close_tab() be directly compared against new_tab()/next_tab()
+    from the console output of a single live session, rather than by
+    re-reading source code."""
+
+    before_hwnd, before_title = before
+    after_hwnd, after_title = after
+    print(
+        f"[DEBUG] {label}: sending {keys_desc}\n"
+        f"[DEBUG] {label}: foreground BEFORE = hwnd={before_hwnd} title={before_title!r}\n"
+        f"[DEBUG] {label}: press_key_combo() reported ok={ok}\n"
+        f"[DEBUG] {label}: foreground AFTER  = hwnd={after_hwnd} title={after_title!r}"
+    )
+
+
 def refresh(voice):
 
+    before = _debug_foreground_window() if config.DEBUG else None
+
     ok = input_control.press_key(input_control.VK_F5)
+
+    if config.DEBUG:
+        _log_combo("refresh", "F5", before, ok, _debug_foreground_window())
 
     voice.speak("Refreshing." if ok else INPUT_FAILURE_MESSAGE)
 
 
 def new_tab(voice):
 
+    before = _debug_foreground_window() if config.DEBUG else None
+
     ok = input_control.press_key_combo(
         input_control.VK_CONTROL,
         input_control.VK_KEY_T
     )
+
+    if config.DEBUG:
+        _log_combo("new_tab", "CTRL+T", before, ok, _debug_foreground_window())
 
     voice.speak("Opening new tab." if ok else INPUT_FAILURE_MESSAGE)
 
 
 def close_tab(voice):
 
+    before = _debug_foreground_window() if config.DEBUG else None
+
     ok = input_control.press_key_combo(
         input_control.VK_CONTROL,
         input_control.VK_KEY_W
     )
+
+    if config.DEBUG:
+        _log_combo("close_tab", "CTRL+W", before, ok, _debug_foreground_window())
 
     voice.speak("Closing tab." if ok else INPUT_FAILURE_MESSAGE)
 
 
 def next_tab(voice):
 
+    before = _debug_foreground_window() if config.DEBUG else None
+
     ok = input_control.press_key_combo(
         input_control.VK_CONTROL,
         input_control.VK_TAB
     )
+
+    if config.DEBUG:
+        _log_combo("next_tab", "CTRL+TAB", before, ok, _debug_foreground_window())
 
     voice.speak("Switching to the next tab." if ok else INPUT_FAILURE_MESSAGE)
 
 
 def previous_tab(voice):
 
+    before = _debug_foreground_window() if config.DEBUG else None
+
     ok = input_control.press_key_combo(
         input_control.VK_CONTROL,
         input_control.VK_SHIFT,
         input_control.VK_TAB
     )
+
+    if config.DEBUG:
+        _log_combo(
+            "previous_tab", "CTRL+SHIFT+TAB", before, ok, _debug_foreground_window()
+        )
 
     voice.speak(
         "Switching to the previous tab." if ok else INPUT_FAILURE_MESSAGE
@@ -161,20 +226,30 @@ def previous_tab(voice):
 
 def go_back(voice):
 
+    before = _debug_foreground_window() if config.DEBUG else None
+
     ok = input_control.press_key_combo(
         input_control.VK_MENU,
         input_control.VK_LEFT
     )
+
+    if config.DEBUG:
+        _log_combo("go_back", "ALT+LEFT", before, ok, _debug_foreground_window())
 
     voice.speak("Going back." if ok else INPUT_FAILURE_MESSAGE)
 
 
 def go_forward(voice):
 
+    before = _debug_foreground_window() if config.DEBUG else None
+
     ok = input_control.press_key_combo(
         input_control.VK_MENU,
         input_control.VK_RIGHT
     )
+
+    if config.DEBUG:
+        _log_combo("go_forward", "ALT+RIGHT", before, ok, _debug_foreground_window())
 
     voice.speak("Going forward." if ok else INPUT_FAILURE_MESSAGE)
 
@@ -198,19 +273,24 @@ _BACK_PATTERN = re.compile(r"\bback\b")
 # unrelated phrasing far apart in a longer sentence.
 NEW_TAB_ALIASES = ("new tab", "new chrome tab", "new browser tab", "new edge tab")
 
-# "close (the|this|a|new)* tab" - tolerates the small, fixed set of
+# "close(d)? (the|this|a|new)* tab" - tolerates the small, fixed set of
 # articles/qualifiers a speaker naturally inserts between "close" and
-# "tab" ("close the tab", "close this tab", "close the new tab").
+# "tab" ("close the tab", "close this tab", "close the new tab"), and
+# the past-tense STT variant "closed" (Phase 11.12: "closed tab" was
+# observed live falling through to the bare-Tab PRESS_KEY rescue,
+# exactly like "close tab" did before this pattern existed).
 # Deliberately a bounded, enumerated word class repeated with `*`, NOT
 # an open "\bclose\b.*\btab\b" that could span an entire unrelated
 # sentence - mirrors intent_layer.py's own _DANGEROUS_ARTICLE pattern
 # (same "optional article between verb and noun" reasoning, same small
-# fixed word list). Checked BEFORE NEW_TAB_ALIASES below: "close the
-# new tab" contains the literal substring "new tab" too, but closing is
-# what the user actually asked for - the more specific, verb-led match
-# must win.
+# fixed word list). "closed?" is word-boundary-anchored, so it matches
+# only the standalone words "close"/"closed" - never a mid-word
+# fragment of something like "enclosed". Checked BEFORE NEW_TAB_ALIASES
+# below: "close the new tab" contains the literal substring "new tab"
+# too, but closing is what the user actually asked for - the more
+# specific, verb-led match must win.
 _TAB_ARTICLE = r"(?:(?:the|this|a|new)\s+)*"
-CLOSE_TAB_RE = re.compile(r"\bclose\b\s+" + _TAB_ARTICLE + r"tab\b")
+CLOSE_TAB_RE = re.compile(r"\bclosed?\b\s+" + _TAB_ARTICLE + r"tab\b")
 
 
 def handle(command, voice):
