@@ -1,6 +1,9 @@
 import os
+import re
 import subprocess
 import webbrowser
+
+import input_control
 
 
 CHROME_PATHS = [
@@ -95,6 +98,107 @@ def search(voice, query):
     webbrowser.open(url)
 
 
+# Spoken when a fixed-shortcut action below reports its low-level
+# SendInput injection was rejected by the OS (see input_control.py's
+# module docstring - e.g. UIPI blocking input into a higher-privilege
+# window). Deliberately generic (never names what was attempted) and
+# never speaks the SUCCESS message in this case - see each function
+# below: the action is performed FIRST, then the spoken response is
+# chosen from its real, checked outcome, rather than always claiming
+# success up front.
+INPUT_FAILURE_MESSAGE = "I couldn't send that command."
+
+
+def refresh(voice):
+
+    ok = input_control.press_key(input_control.VK_F5)
+
+    voice.speak("Refreshing." if ok else INPUT_FAILURE_MESSAGE)
+
+
+def new_tab(voice):
+
+    ok = input_control.press_key_combo(
+        input_control.VK_CONTROL,
+        input_control.VK_KEY_T
+    )
+
+    voice.speak("Opening new tab." if ok else INPUT_FAILURE_MESSAGE)
+
+
+def close_tab(voice):
+
+    ok = input_control.press_key_combo(
+        input_control.VK_CONTROL,
+        input_control.VK_KEY_W
+    )
+
+    voice.speak("Closing tab." if ok else INPUT_FAILURE_MESSAGE)
+
+
+def next_tab(voice):
+
+    ok = input_control.press_key_combo(
+        input_control.VK_CONTROL,
+        input_control.VK_TAB
+    )
+
+    voice.speak("Switching to the next tab." if ok else INPUT_FAILURE_MESSAGE)
+
+
+def previous_tab(voice):
+
+    ok = input_control.press_key_combo(
+        input_control.VK_CONTROL,
+        input_control.VK_SHIFT,
+        input_control.VK_TAB
+    )
+
+    voice.speak(
+        "Switching to the previous tab." if ok else INPUT_FAILURE_MESSAGE
+    )
+
+
+def go_back(voice):
+
+    ok = input_control.press_key_combo(
+        input_control.VK_MENU,
+        input_control.VK_LEFT
+    )
+
+    voice.speak("Going back." if ok else INPUT_FAILURE_MESSAGE)
+
+
+def go_forward(voice):
+
+    ok = input_control.press_key_combo(
+        input_control.VK_MENU,
+        input_control.VK_RIGHT
+    )
+
+    voice.speak("Going forward." if ok else INPUT_FAILURE_MESSAGE)
+
+
+# Word-boundary-anchored ("\bback\b") rather than a bare substring
+# check: "press backspace" contains "back" as a literal substring
+# (backspace = "back" + "space"), and a bare `"back" in command` check
+# would incorrectly hijack it into a browser "go back" action before
+# keyboard_control.handle() ever gets a chance to handle it as the
+# Backspace key. Word-boundary matching means "back" only matches as
+# its own standalone word, never as a prefix fragment of "backspace".
+_BACK_PATTERN = re.compile(r"\bback\b")
+
+# "new <browser name> tab" - the browser/app name sits BETWEEN "new"
+# and "tab" ("open a new chrome tab"), unlike the more common "new tab"
+# contiguous phrase already covered by the plain substring check below.
+# Explicit, hand-enumerated literal aliases - not an open-ended regex -
+# matching this project's existing "enumerate the variant" style (see
+# intent_parser.KNOWN_APPLICATIONS, multilingual_normalizer's marker
+# tuples) rather than a broad "new .* tab" pattern that could match
+# unrelated phrasing far apart in a longer sentence.
+NEW_TAB_ALIASES = ("new tab", "new chrome tab", "new browser tab", "new edge tab")
+
+
 def handle(command, voice):
     """Try to handle a web-related command. Returns True if handled."""
 
@@ -125,6 +229,43 @@ def handle(command, voice):
         if query:
             search(voice, query)
 
+        return True
+
+    # BROWSER TAB MANAGEMENT - checked before the generic CHROME/EDGE
+    # open checks below (no overlap in practice, since none of these
+    # phrases contain "chrome"/"edge"), and before keyboard_control.
+    # handle()'s "press tab" check ever gets a chance to run (this
+    # module is earlier in commands.py's dispatch chain) - so "open new
+    # tab"/"tab band karo" (routed here via multilingual_normalizer,
+    # see that module's _check_tab_browser()) can never be mistaken for
+    # the bare Tab key.
+    if any(alias in command for alias in NEW_TAB_ALIASES):
+        new_tab(voice)
+        return True
+
+    if "close tab" in command:
+        close_tab(voice)
+        return True
+
+    if "next tab" in command:
+        next_tab(voice)
+        return True
+
+    if "previous tab" in command:
+        previous_tab(voice)
+        return True
+
+    # BROWSER NAVIGATION
+    if "refresh" in command or "reload" in command:
+        refresh(voice)
+        return True
+
+    if "go forward" in command:
+        go_forward(voice)
+        return True
+
+    if _BACK_PATTERN.search(command):
+        go_back(voice)
         return True
 
     # CHROME

@@ -64,6 +64,106 @@ def test_search_the_web_for_python():
 
 
 # ---------------------------------------------------------------------
+# PHASE 10.3: "search youtube" (bare, no query) is deliberately left
+# UNREWRITTEN - see command_parser.SEARCH_BARE_SITE_RE. It must NOT
+# become "search for youtube" (a literal, wrong Google search) so it
+# can instead be recognized by intent_layer.py as an incomplete SEARCH
+# intent and slot-filled by the Phase 10.3 context layer. Every other
+# "search X" phrasing is completely unaffected.
+# ---------------------------------------------------------------------
+
+def test_search_youtube_bare_is_left_unrewritten():
+    assert command_parser.normalize("search youtube") == "search youtube"
+
+
+def test_search_python_still_rewrites_normally():
+    """The narrow "search youtube" exception must not widen to any
+    other "search X" phrase."""
+    assert command_parser.normalize("search python") == "search for python"
+
+
+def test_search_youtube_for_something_still_rewrites_normally():
+    """Only the bare "search youtube" (nothing after it) is special-
+    cased - a real query after it is out of Phase 10.3's scope and
+    keeps the existing generic rewrite behavior."""
+    assert command_parser.normalize(
+        "search youtube for cats"
+    ) == "search for youtube for cats"
+
+
+# ---------------------------------------------------------------------
+# PHASE 10.5: "search that again" (the exact, single repeat-search
+# trigger phrase) is left UNREWRITTEN, exactly the same rationale and
+# pattern as "search youtube" above.
+# ---------------------------------------------------------------------
+
+def test_search_that_again_is_left_unrewritten():
+    assert command_parser.normalize("search that again") == "search that again"
+
+
+def test_search_again_still_rewrites_normally():
+    """The narrow "search that again" exception must not widen to any
+    other "search ... again" phrase."""
+    assert command_parser.normalize("search again") == "search for again"
+
+
+def test_search_that_still_rewrites_normally_without_again():
+    """Only the exact phrase "search that again" is special-cased -
+    "search that" alone keeps the existing generic rewrite behavior."""
+    assert command_parser.normalize("search that") == "search for that"
+
+
+# ---------------------------------------------------------------------
+# Keyboard/modifier-key synonym normalization (control/ctrl,
+# esc/escape, back space/backspace)
+# ---------------------------------------------------------------------
+
+def test_control_normalizes_to_ctrl():
+    assert command_parser.normalize("press control c") == "press ctrl c"
+
+
+def test_ctrl_already_canonical_is_unchanged():
+    assert command_parser.normalize("press ctrl c") == "press ctrl c"
+
+
+def test_control_shift_escape_normalizes():
+    assert (
+        command_parser.normalize("press control shift escape")
+        == "press ctrl shift escape"
+    )
+
+
+def test_esc_normalizes_to_escape():
+    assert command_parser.normalize("press esc") == "press escape"
+
+
+def test_escape_already_canonical_is_unchanged():
+    assert command_parser.normalize("press escape") == "press escape"
+
+
+def test_esc_does_not_false_match_inside_escort():
+    """Word-boundary-anchored: "esc" must not match as a prefix
+    fragment of an unrelated word like "escort"."""
+    assert command_parser.normalize("press escort") == "press escort"
+
+
+def test_back_space_two_words_normalizes_to_backspace():
+    assert command_parser.normalize("press back space") == "press backspace"
+
+
+def test_backspace_already_canonical_is_unchanged():
+    assert command_parser.normalize("press backspace") == "press backspace"
+
+
+def test_del_is_never_normalized_to_delete():
+    """Deliberate: "del" -> "delete" normalization is intentionally NOT
+    implemented - see keyboard_control.handle()'s own docstring and
+    tests/test_security.py for why Delete stays permanently
+    unrecognized in this project."""
+    assert command_parser.normalize("press del") == "press del"
+
+
+# ---------------------------------------------------------------------
 # APPLICATION variations
 # ---------------------------------------------------------------------
 

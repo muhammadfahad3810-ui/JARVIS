@@ -30,10 +30,31 @@ alone and wait for "Yes?" before speaking your command.
 
 ## Speech recognition architecture
 
-The voice pipeline is: **microphone → `speech.py` → wake-word extraction
-(`jarvis.py`) → `command_parser.normalize()` → `commands.CommandProcessor`
-→ action module**. Every stage is deterministic - no LLM or AI service is
-used anywhere in this pipeline.
+The voice pipeline, as it actually stands after Phase 10.5:
+
+```
+microphone → speech.py (Google online STT, offline Whisper fallback - Phase 10.1)
+  → wake-word extraction (jarvis.py)
+  → commands.CommandProcessor.process()
+       1. pending dangerous-confirmation reply         (Phase 9)
+       2. pending context/slot reply                    (Phase 10.3)
+       3. dangerous-command confirmation gate            (Phase 9)
+       4. natural-language clause splitting              (Phase 8)
+       5. command_parser.normalize()
+       6. fixed deterministic dispatch chain              (Phase 3-7)
+       7. rule-based intent fallback                      (Phase 10.2)
+            + pending-slot creation (follow-up question)   (Phase 10.3)
+       8. contextual reference / repeat-search resolution (Phase 10.4/10.5)
+       9. "I don't know how to do that yet."
+  → action module (web/system/window/volume/media/screen/keyboard)
+  → voice.py (pyttsx3 text-to-speech)
+```
+
+Every stage is deterministic - no LLM or AI service is used anywhere in
+this pipeline, in any phase. Every flag-gated stage above (2, 3, 7, 8)
+defaults **off**; with all of them off, the pipeline is exactly steps
+1 (dead code, `_pending_confirmation` never set) → 5 → 6 → 9, i.e.
+byte-for-byte the same behavior this project has had since Phase 7.
 
 1. **`speech.Speech.calibrate_microphone()`** runs once at startup. It
    listens to ambient room noise for `config.AMBIENT_NOISE_DURATION`
@@ -43,19 +64,28 @@ used anywhere in this pipeline.
    skipped with a printed warning, not a crash.
 2. **`speech.Speech.listen()`** opens the microphone, records up to
    `phrase_limit` seconds (or until silence, per `pause_threshold`), and
-   sends the captured audio to `recognize_google()`.
-   - If the API call fails with a transient error (`RequestError`), it
-     is retried up to `config.SPEECH_API_RETRIES` times **on the same
+   sends the captured audio to the backend abstraction in
+   `stt_backend.py` (Phase 10.1) - `GoogleOnlineBackend.recognize()`
+   (the original `recognize_google()` call, unchanged) is always tried
+   first.
+   - If the online backend fails with a transient error, it is
+     retried up to `config.SPEECH_API_RETRIES` times **on the same
      captured audio** (no need to make the user repeat themselves) with
      `config.SPEECH_API_RETRY_DELAY` seconds between attempts. Only
      after all retries fail is "I am having trouble connecting to
      speech recognition." spoken - and at most once every
      `config.REQUEST_ERROR_ANNOUNCE_COOLDOWN` seconds, so a prolonged
      outage doesn't repeat the announcement on every listen cycle.
-   - `UnknownValueError` (heard something, couldn't transcribe it) and
-     `WaitTimeoutError` (heard nothing) both just return `""` - no
-     announcement, no crash, no retry (see `listen_with_retry` below for
-     where retrying-by-re-listening happens instead).
+   - Either way (unintelligible audio or a network failure after
+     retries), `OfflineWhisperBackend` is then tried as a fallback -
+     but it has no `faster_whisper` installed, so `is_available()`
+     reports `False` and this is a documented, tested, inert no-op in
+     this project's current state (see "Phase 10.1" below).
+   - `UnknownValueError`-equivalent (heard something, couldn't
+     transcribe it) and `WaitTimeoutError` (heard nothing) both just
+     return `""` - no announcement, no crash, no retry (see
+     `listen_with_retry` below for where retrying-by-re-listening
+     happens instead).
    - Any other microphone error (e.g. no device present) is caught
      broadly and also returns `""`.
 3. **`speech.Speech.listen_with_retry()`** wraps `listen()` and is used
@@ -430,6 +460,445 @@ suite, which reported zero real/patched-through calls on the final run.
 - No timeout on a pending confirmation - it remains pending until the
   next utterance, however long that takes.
 
+## Phase 10.1 — Offline Speech-to-Text Fallback
+
+**Status: PHASE 10.1 COMPLETE.**
+
+`src/stt_backend.py` introduces a small backend abstraction
+(`STTBackend`) so `speech.Speech` is written against an interface, not
+against `recognize_google()` directly. `Speech.listen()`'s public
+contract (always returns a plain string, or `""` - never raises) is
+completely unchanged.
+
+Two backends exist:
+
+- `GoogleOnlineBackend` - the original Phase 1-9 backend, unchanged
+  behavior, still the primary/first-tried backend.
+- `OfflineWhisperBackend` - a fallback, only ever tried after the
+  online backend fails to produce text (`config.OFFLINE_STT_ENABLED`,
+  default `True` - see below for why this is safe left on). It calls
+  `speech_recognition`'s own bundled `recognize_faster_whisper()`
+  adapter, which lazily imports the separate `faster_whisper` package
+  only when actually invoked.
+
+**`faster_whisper` is NOT installed in this project.**
+`OfflineWhisperBackend.is_available()` correctly reports `False` until
+it is, and every caller treats "offline backend unavailable" as a
+normal, expected, non-error case - so `config.OFFLINE_STT_ENABLED`
+being `True` by default has **no effect** until that separate,
+not-yet-approved dependency is explicitly installed. `config.
+OFFLINE_STT_DEVICE`/`OFFLINE_STT_COMPUTE_TYPE` are pinned to `"cpu"`/
+`"int8"` (not `"auto"`/`"cuda"`) - validated during Phase 10.1
+development that `"auto"` would silently pick a broken CUDA path on
+this machine (missing NVIDIA cuBLAS runtime) and the offline fallback
+would never actually produce text; `"cpu"`/`"int8"` is the verified-
+working configuration and requires no dependency beyond
+`faster_whisper` + `soundfile`.
+
+### Known limitations
+- No effect at all until `faster_whisper` is separately installed -
+  that remains a deliberate, deferred, approval-gated decision.
+- Offline recognition quality/latency has not been benchmarked in this
+  project (no installed model to test against yet).
+
+## Phase 10.2 — Rule-Based Intent Fallback Layer
+
+**Status: PHASE 10.2 COMPLETE. `config.ENABLE_INTENT_FALLBACK_LAYER`
+default `False`.**
+
+`src/intent_layer.py` adds a rule-based fallback consulted only after
+the entire existing deterministic pipeline (`natural_language.
+split_into_clauses()` → `command_parser.normalize()` → the fixed
+dispatch chain) has already failed to recognize a command - see
+`commands.py`'s insertion point, immediately before the final "I don't
+know how to do that" response. Every command that already worked
+before Phase 10.2 is completely unaffected: zero added latency, zero
+behavior change, since this module is never even called for them.
+
+Rescues real, verified gaps in the existing dispatch chain: dangerous-
+command paraphrases ("power off the computer", "reboot the machine" -
+`intent_parser.py` has no representation of lock/shutdown/restart at
+all), absolute-volume phrasings with the number before "volume" or a
+missing verb, "search for X" appearing mid-sentence, and "hit enter"/
+"tab key" style key-press phrasings. `intent_layer.py` does **not**
+modify `intent_parser.py` (which stays diagnostics-only, fixed-shape,
+untouched since Phase 5) - it's a separate module that reuses `intent_
+parser`'s fixed allow-lists (`KNOWN_APPLICATIONS`, `KNOWN_KEYS`) by
+import.
+
+Every `IntentFrame` this layer produces is rendered to one of the
+exact same canonical command strings the existing handlers already
+understand and fed back into `CommandProcessor.process()` - the same
+method, called recursively - never into a control module directly. The
+Phase 9 dangerous-command confirmation gate is the unconditional first
+check at the top of `process()` on every call, including recursive
+ones, so nothing this layer produces can bypass it.
+
+**Two defects were found and fixed during Phase 10.2's own validation**
+before recommending any default: the original dangerous-phrase regexes
+matched the verb and noun independently anywhere in the text (so
+"computer shutdown information" and "shut down information about the
+computer" both incorrectly matched) - fixed to require the verb, an
+optional short article, then the noun, immediately adjacent. The
+original volume-percentage regex captured only a bare 1-3 digit run,
+so a leading `-` or a decimal point was silently ignored rather than
+rejected ("-10 percent" matched "10") - fixed to capture the full
+numeric token and explicitly reject anything that isn't a clean,
+unsigned whole number (reject-not-clamp, matching `command_parser.
+canonicalize_set_volume_phrase()`'s existing policy).
+
+### Known limitations
+- Because most existing control-module handlers already match very
+  broad bare substrings (e.g. `web_control.handle()` treats "chrome"
+  anywhere in the command as "open Chrome"), a targeted-window or
+  open-application phrase that names a known application is usually
+  already "handled" by an earlier dispatch step before this layer is
+  ever reached - disclosed, not hidden, in the module's own docstring.
+- No conversational memory/context - every command is still evaluated
+  statelessly at this phase (added in 10.3-10.5, see below).
+
+## Phase 10.3 — Conversational Context / Slot-Filling
+
+**Status: PHASE 10.3 COMPLETE. `config.ENABLE_CONTEXT_LAYER` default
+`False` - not yet recommended for default-on use.**
+
+Adds a small, deliberately narrow conversational-context layer
+(`src/context_manager.py`) on top of Phase 10.2's rule-based intent
+fallback layer. JARVIS can now ask exactly one kind of follow-up
+question - a missing search query - and use the next reply to
+complete it:
+
+```
+User:  "Jarvis, search YouTube."
+JARVIS: "What should I search for?"
+User:  "Spider-Man."
+JARVIS: "Searching for Spider-Man."
+```
+
+No other conversational behavior was added. "Make it louder" already
+worked before this phase (a fixed pronoun idiom in
+`command_parser.py`, unrelated to this layer) and is unaffected.
+
+### Architecture
+
+```
+speech -> wake-word detection -> speech-to-text -> command extraction
+       -> commands.CommandProcessor.process()
+            1. pending dangerous-confirmation reply   (Phase 9, unchanged)
+            2. pending context/slot reply              (Phase 10.3, NEW)
+            3. dangerous-command safety gate            (Phase 9, unchanged)
+            4. clause splitting                         (Phase 8, unchanged)
+            5. normalization                            (unchanged)
+            6. existing dispatch chain                  (unchanged)
+            7. intent fallback                          (Phase 10.2, unchanged)
+            8. context slot creation                    (Phase 10.3, NEW)
+            9. "I don't know how to do that yet."
+       -> existing control modules -> existing voice responses
+```
+
+Only SEARCH is slot-fillable, and only for one bare phrasing: "search
+youtube" (naming a site with no query). Everything else that reaches
+step 8 behaves exactly as it did before this phase.
+
+### How it works
+
+1. `command_parser.canonicalize_search_phrase()` gained one narrow
+   exception (`SEARCH_BARE_SITE_RE`): "search youtube" is left
+   unrewritten, instead of being incorrectly turned into a literal
+   Google search for the word "youtube" (its previous, wrong
+   behavior - "search youtube" was never a correctly-handled command
+   before this phase).
+2. `intent_layer.py` gained one new rule (`SEARCH_INCOMPLETE_RE`) that
+   recognizes this bare phrasing as an **incomplete** SEARCH
+   `IntentFrame` (`frame.incomplete = True`) instead of falling
+   through to `OPEN_APPLICATION`. Every other phrasing naming
+   "youtube" ("open youtube", "launch youtube", "search youtube for
+   cats") is completely unaffected.
+3. `commands.CommandProcessor` parks a `context_manager.
+   PendingSlotRequest` (`self._pending_slot`) and speaks the question,
+   instead of silently doing nothing (the old dead-code fallthrough)
+   or opening YouTube.
+4. The next call to `process()` treats the new utterance as the
+   reply: `context_manager.resolve_pending_slot()` decides whether it
+   (a) fills the slot -> renders `"search for <reply>"` and calls
+   `self.process()` again, (b) independently looks like its own
+   recognized command (including a dangerous one) -> drops the stale
+   slot and calls `self.process()` with the ORIGINAL text unmodified,
+   or (c) is empty/expired -> says "Never mind." and does nothing.
+
+`context_manager.py` is pure: it never imports a control module, never
+imports `voice`, and has no `subprocess`/`ctypes`/`comtypes`/`os.system`
+anywhere in it (enforced by dedicated tests, not just by convention -
+see `tests/test_security.py`'s Phase 10.3 section and
+`tests/test_context_manager.py`'s import-list test). Every canonical
+command it can produce is handed back to `CommandProcessor.process()`
+- recursively, exactly like the Phase 8 clause loop and the Phase 10.2
+intent-fallback loop already work - so the Phase 9 dangerous-command
+gate (the unconditional first check on every `process()` call,
+including recursive ones) can never be bypassed by anything this layer
+produces.
+
+### Dangerous commands remain protected
+
+```
+JARVIS: "What should I search for?"
+User:  "Lock my computer."
+JARVIS: "Are you sure you want to lock the computer? Say yes to confirm."
+```
+
+A reply to a pending search question is never blindly poured into the
+search query - `resolve_pending_slot()` checks it against the existing
+deterministic classifiers first (`intent_parser.classify()`, then
+`intent_layer.understand()`, which includes the Phase 10.2 dangerous-
+paraphrase rules). If it independently looks like a real command, the
+pending slot is dropped and the original text is re-processed from the
+top of `process()` - so the Phase 9 gate sees it normally, exactly as
+if no question had ever been asked.
+
+### Expiry
+
+A pending slot request is only valid for `config.CONTEXT_SLOT_MAX_TURNS`
+(default 1 - the very next command) or `config.CONTEXT_SLOT_TTL_SECONDS`
+(default 30 real-world seconds), whichever comes first. Past either
+bound, it's treated as gone and the new utterance is processed as a
+fresh command. This is a UX bound, not a safety boundary: even a
+wrongly-still-valid slot can only ever render into a `"search for
+<text>"` command - never anything dangerous.
+
+### Configuration
+
+- `config.ENABLE_CONTEXT_LAYER` (default `False`) - master switch.
+  Only has an effect when `config.ENABLE_INTENT_FALLBACK_LAYER` is
+  ALSO `True`, since that layer is what discovers an incomplete SEARCH
+  frame in the first place.
+- `config.CONTEXT_SLOT_MAX_TURNS`, `config.CONTEXT_SLOT_TTL_SECONDS` -
+  expiry bounds, see above.
+
+### Security guarantees
+
+- `context_manager.py` contains no `subprocess`, `ctypes`, `comtypes`,
+  `eval(`, or `exec(`, never calls `os.system`, and imports none of
+  `web_control`/`system_control`/`window_control`/`volume_control`/
+  `media_control`/`keyboard_control`/`screen_control`/`voice` -
+  verified directly by inspecting its import list, not just by
+  convention.
+- Every canonical command this layer can produce is fed back through
+  `CommandProcessor.process()`, never executed directly.
+- A dangerous phrase said while a search slot is pending still reaches
+  the Phase 9 confirmation gate, with every real-action primitive
+  mocked in tests proving nothing executes without it.
+- Pending-slot state (`self._pending_slot`) lives on the
+  `CommandProcessor` instance, exactly like `self._pending_confirmation`
+  - never at module level.
+
+### Known limitations
+
+- Only SEARCH is slot-fillable, and only for the bare "search youtube"
+  phrasing - no other intent asks a follow-up question in this phase.
+- No general conversational memory - `self._context` only exists to
+  bound a pending slot's expiry; JARVIS does not "remember" anything
+  about earlier turns beyond that one pending question.
+- No pronoun/reference resolution beyond the pre-existing, unrelated
+  "turn it up"/"make it louder" volume idiom in `command_parser.py`.
+- A rejected/expired slot reply that happened to also be a valid new
+  command is still processed as that new command (by design - see
+  "How it works" above) - but a reply that's neither a recognized
+  command nor empty is always treated as free-text search input, even
+  if that wasn't the user's intent (e.g. a genuinely misheard, garbled
+  reply becomes a nonsense search query rather than being rejected).
+- Extending slot-filling to other intents, adding real multi-turn
+  memory, or a dedicated response-generation layer are explicitly out
+  of scope for this phase - not yet implemented.
+
+## Phase 10.4 — Contextual Reference Resolution ("it"/"that"/"this")
+
+**Status: PHASE 10.4 COMPLETE. `config.ENABLE_REFERENCE_RESOLUTION`
+default `False` - not yet recommended for default-on use.**
+
+Adds one narrow capability on top of Phase 10.3's context layer:
+JARVIS can resolve "it"/"that"/"this" against the last application it
+heard named, across separate turns:
+
+```
+User:  "Jarvis, open Chrome."
+JARVIS: "Opening Chrome."
+...
+User:  "Jarvis, close it."
+JARVIS: "Closing Chrome."
+```
+
+Scoped deliberately to exactly this one reference type. Per the Phase
+10.4 architecture audit, other references requested for a future phase
+- "the previous search result", "first/second/last result", true
+browser-history "previous website" navigation - are **not
+implemented** and are not implementable with this project's current
+capabilities: JARVIS has no way to read back a web page's content or
+navigate browser history (`web_control.search()` only ever calls
+`webbrowser.open(url)` - fire-and-forget, no DOM/page access anywhere
+in this codebase). Building those would require a new, unapproved,
+dependency-heavy subsystem (e.g. browser automation) and was
+deliberately not attempted here.
+
+### How it works
+
+1. `commands.py` now reuses the same pure `intent_parser.classify()`
+   call it has used for `DEBUG` diagnostics since Phase 8 - computed
+   once per command (whenever `DEBUG` or `config.ENABLE_REFERENCE_
+   RESOLUTION` is on) - to recognize when the command about to be
+   dispatched names a known application. After a successful dispatch,
+   `CommandProcessor._finish_dispatch()` records that application name
+   onto `self._context` (`context_manager.ConversationContext.record()`).
+2. A later, standalone command matching exactly `"<verb> it"` /
+   `"<verb> that"` / `"<verb> this"` (verbs: open, close, minimize,
+   maximize, restore, switch, switch to) - and ONLY that exact shape,
+   anchored whole-string, the same "exact-phrase-only" discipline
+   `command_parser.py`'s existing "turn it up"/"make it louder" rule
+   already uses - is resolved by `context_manager.resolve_reference()`
+   against the recorded application and rendered into the existing
+   canonical command string (`"close chrome"`, `"open chrome"`, ...).
+3. That canonical string is handed back to `self.process()`,
+   recursively, exactly like every other layer in this project - so
+   the Phase 9 dangerous-command gate (the unconditional first check
+   on every `process()` call, including recursive ones) still sees it
+   normally.
+
+`context_manager.py` remains import-clean (no control module, no
+`voice`, no execution primitive) - verified by the same structural
+tests as Phase 10.3, re-run after these additions.
+
+### Known, disclosed limitation: three verbs are currently unreachable
+
+`window_control.handle()`'s existing, untargeted "minimize this
+window"/"maximize"/"restore" bare-substring checks run earlier in
+`commands.py`'s dispatch chain and already match "minimize it"/
+"maximize it"/"restore it" first (acting on whichever window currently
+has focus) - so in the live dispatch chain, reference resolution's own
+minimize/maximize/restore handling is never actually reached for those
+three verbs. It's included anyway for completeness, direct unit
+testing, and defensive value against any future dispatch reordering -
+the same disclosed-rather-than-hidden approach `intent_layer.py`
+already uses for its own analogous case. "close it"/"switch it"/
+"switch to it"/"open it" are the phrasings that actually reach this
+layer in practice.
+
+### Expiration and safety
+
+A recorded application stays referenceable for `config.
+REFERENCE_MAX_TURNS` (default 3) `CommandProcessor.process()` calls or
+`config.REFERENCE_TTL_SECONDS` (default 45 real-world seconds),
+whichever comes first - then it's treated as gone and the utterance
+falls through to the standard "I don't know how to do that" response.
+Unlike Phase 10.3's pending-slot TTL (a UX bound only, since a stale
+slot can only ever become a search string), this expiry **is** a
+safety bound: a resolved reference can trigger a real window/
+application action, so it defaults tighter and is treated as
+load-bearing.
+
+### Configuration
+
+- `config.ENABLE_REFERENCE_RESOLUTION` (default `False`) - master
+  switch. Independent of `config.ENABLE_CONTEXT_LAYER` on purpose -
+  different capability, different risk profile, separately validated.
+- `config.REFERENCE_MAX_TURNS`, `config.REFERENCE_TTL_SECONDS` -
+  expiry bounds, see above.
+
+### Security guarantees
+
+- `context_manager.py` still contains no `subprocess`, `ctypes`,
+  `comtypes`, `eval(`, or `exec(`, never calls `os.system`, and
+  imports none of the control modules or `voice`.
+- `resolve_reference()` can only ever render `"open <app>"` or
+  `"<minimize|maximize|restore|close|switch> <app>"` for an app
+  already in `intent_parser.KNOWN_APPLICATIONS` - structurally
+  incapable of producing `"lock computer"`/`"shutdown computer"`/
+  `"restart computer"` or any other dangerous phrase (checked directly
+  against every known application and every recognized verb).
+- Naming an application and then giving a real dangerous command still
+  reaches the Phase 9 confirmation gate, with every real-action
+  primitive mocked in tests proving nothing executes without it.
+- A stale/expired recorded application is never used to resolve a
+  reference - proven with every window-control primitive mocked and
+  asserted uncalled.
+
+### Known limitations
+
+- Only application/window references are resolved - no previous
+  search result, no previous website, no general pronoun grammar.
+- No entity history beyond the single most-recently-named application
+  - saying two application names in a row only keeps the second.
+- "minimize it"/"maximize it"/"restore it" are shadowed by the
+  pre-existing untargeted window handling (see above) - not a defect
+  introduced by this phase, but worth knowing if it seems like nothing
+  happened, since the fallback behavior it silently receives is "act
+  on whichever window currently has focus," not "act on the named app."
+- No dedicated response-generation layer, no general conversational
+  memory, no multi-turn planning - all explicitly out of scope, per
+  the Phase 10.4 architecture audit.
+
+## Phase 10.5 — Repeat-Search + "Again"/"Once More" Phrasing
+
+**Status: PHASE 10.5 COMPLETE. Reuses `config.ENABLE_REFERENCE_
+RESOLUTION` (default `False`) - deliberately no second flag.**
+
+Two small, additive extensions to Phase 10.4's reference-resolution
+layer:
+
+```
+User:  "Jarvis, open YouTube."
+JARVIS: "Opening YouTube."
+...
+User:  "Jarvis, open it again."
+JARVIS: "Opening YouTube."
+
+User:  "Jarvis, search for cats."
+JARVIS: "Searching for cats."
+...
+User:  "Jarvis, search that again."
+JARVIS: "Searching for cats."
+```
+
+1. **"again"/"once more" phrasing widening**: `context_manager.
+   REFERENCE_COMMAND_RE` now accepts an optional trailing `"again"`/
+   `"once more"` ("open it again", "open that once more") - existing
+   bare "open it" (no trailing word) is completely unaffected.
+2. **Repeat-search**: exactly one new trigger phrase, `"search that
+   again"`, resolved against the last search query and rendered to
+   `"search for <query>"`.
+
+The last-search-query is tracked in **fields on `ConversationContext`
+kept completely separate from the Phase 10.4 last-named-application
+fields** - recording a search never overwrites/erases the remembered
+application, and vice versa. This was the key design question this
+phase had to answer (see the Phase 10.5 architecture audit): a shared
+single-dict design would have let `"open chrome"` → `"search for
+cats"` → `"open it"` wrongly fail (the search recording would have
+erased the application memory); the two-slot design keeps both
+independently correct and independently expiring (`config.
+SEARCH_REPEAT_MAX_TURNS`/`SEARCH_REPEAT_TTL_SECONDS`, separate
+constants from `REFERENCE_MAX_TURNS`/`REFERENCE_TTL_SECONDS`).
+
+A Phase 10.3 slot-filled search (`"search youtube"` → `"Spider-Man"` →
+`"search for spider-man"`) is automatically repeatable too, with no
+extra wiring - that resolution recurses through `CommandProcessor.
+process()` and reaches the same recording point as any other search.
+
+One small, disclosed fix was required in `command_parser.py`: the
+existing generic `"search X"` → `"search for X"` rewrite would
+otherwise have mangled the literal trigger phrase into `"search for
+that again"`, which `web_control.handle()` would then have
+immediately (and wrongly) executed as a search for the literal text
+"that again" before ever reaching the resolver - the same class of
+fix Phase 10.3 needed for `"search youtube"`, applied here to exactly
+one additional phrase.
+
+### Known limitations
+- Exactly one repeat-search trigger phrase and one phrasing widening -
+  no other synonyms ("do that search again," "repeat it") were added.
+- Still only the single most-recently-searched query is remembered -
+  no multi-item search history.
+- Same out-of-scope boundaries as Phase 10.4: no browser history, no
+  search-result reading, no "previous website" stack.
+
 ## Configuration options (`src/config.py`)
 
 | Setting | Purpose |
@@ -445,6 +914,20 @@ suite, which reported zero real/patched-through calls on the final run.
 | `COMMAND_RECOGNITION_RETRIES` | Times JARVIS asks you to repeat yourself after "Yes?" before giving up |
 | `REQUEST_ERROR_ANNOUNCE_COOLDOWN` | Minimum seconds between spoken "trouble connecting" warnings |
 | `DEBUG` | When `True`, prints extra pipeline diagnostics (see below). Off by default. |
+| `REQUIRE_CONFIRMATION_FOR_DANGEROUS_COMMANDS` | (Phase 9) Speak-a-confirmation-prompt gate for lock/shutdown/restart. **Default `False`.** |
+| `OFFLINE_STT_ENABLED` / `OFFLINE_STT_MODEL` / `OFFLINE_STT_DEVICE` / `OFFLINE_STT_COMPUTE_TYPE` | (Phase 10.1) Offline Whisper fallback config - has no effect until `faster_whisper` is separately installed (it isn't). |
+| `ENABLE_INTENT_FALLBACK_LAYER` | (Phase 10.2) Rule-based fallback for commands the deterministic chain misses. **Default `False`.** |
+| `INTENT_CONFIDENCE_THRESHOLD` | (Phase 10.2) Minimum confidence an `intent_layer.IntentFrame` needs to be acted on (`0.6`). |
+| `ENABLE_CONTEXT_LAYER` | (Phase 10.3) Pending-slot follow-up questions (currently only SEARCH's missing query). **Default `False`.** Only has an effect when `ENABLE_INTENT_FALLBACK_LAYER` is also `True`. |
+| `CONTEXT_SLOT_MAX_TURNS` / `CONTEXT_SLOT_TTL_SECONDS` | (Phase 10.3) Expiry bounds for a pending slot request (`1` turn / `30` seconds). |
+| `ENABLE_REFERENCE_RESOLUTION` | (Phase 10.4/10.5) "it"/"that"/"this" (+ "again"/"once more") resolved against the last-named application, and "search that again" against the last search query. **Default `False`.** One flag covers both Phase 10.4 and Phase 10.5 by design. |
+| `REFERENCE_MAX_TURNS` / `REFERENCE_TTL_SECONDS` | (Phase 10.4) Expiry bounds for the last-named-application record (`3` turns / `45` seconds). |
+| `SEARCH_REPEAT_MAX_TURNS` / `SEARCH_REPEAT_TTL_SECONDS` | (Phase 10.5) Expiry bounds for the last-search-query record - tracked independently of `REFERENCE_MAX_TURNS`/`REFERENCE_TTL_SECONDS` (`3` turns / `45` seconds). |
+
+All Phase 9-10.5 feature flags default to `False` - every capability
+they gate is opt-in, not silently active. See each phase's section
+above for the specific rollout status and validation behind that
+default.
 
 ## Wake-word behavior
 
@@ -515,6 +998,9 @@ JARVIS/
 │   ├── command_parser.py      # Deterministic natural-language normalization
 │   ├── natural_language.py    # Bounded multi-clause command splitting (Phase 8)
 │   ├── intent_parser.py       # Fixed-allow-list intent classifier (diagnostics/testing)
+│   ├── intent_layer.py        # Rule-based intent fallback (Phase 10.2)
+│   ├── context_manager.py     # Slot-filling (10.3), reference resolution (10.4), repeat-search (10.5)
+│   ├── stt_backend.py         # STT backend abstraction: online + offline Whisper fallback (Phase 10.1)
 │   ├── commands.py            # Command routing (time/date, greetings, exit)
 │   ├── system_control.py      # Windows apps + power commands
 │   ├── web_control.py         # Browser / web commands
@@ -525,7 +1011,7 @@ JARVIS/
 │   ├── screen_control.py      # Screenshot capture
 │   ├── keyboard_control.py    # Fixed keyboard shortcuts (copy/paste/etc.)
 │   ├── input_control.py       # Low-level ctypes key-press primitives
-│   └── config.py              # Central configuration (wake word, timeouts, etc.)
+│   └── config.py              # Central configuration (wake word, timeouts, feature flags, etc.)
 ├── screenshots/                # Timestamped screenshots (created on first use)
 ├── tests/
 │   ├── test_commands.py
@@ -539,10 +1025,15 @@ JARVIS/
 │   ├── test_screen_control.py
 │   ├── test_keyboard_control.py
 │   ├── test_speech.py         # Mocked recognizer/microphone reliability tests
+│   ├── test_stt_backend.py    # Online/offline STT backend abstraction tests (Phase 10.1)
 │   ├── test_wake_word.py      # Wake-word matching, aliases, repeats
 │   ├── test_pipeline.py       # Full mic-text -> command -> mocked-action tests
 │   ├── test_intent_parser.py  # Intent classifier + allow-list enforcement
+│   ├── test_intent_layer.py   # Rule-based intent fallback tests (Phase 10.2)
+│   ├── test_context_manager.py # Slot-filling/reference-resolution/repeat-search unit tests (10.3-10.5)
 │   └── test_security.py       # Shell/PowerShell/keyboard-injection rejection tests
+├── PHASE_7_9_COMPLETE_VALIDATION_REPORT.md
+├── PHASE_10_COMPLETE_VALIDATION_REPORT.md
 ├── requirements.txt
 └── README.md
 ```
@@ -680,6 +1171,52 @@ LLM or external API is involved.
   `KNOWN_APPLICATIONS` allow-list; anything outside it is classified
   `UNKNOWN` rather than partially matched.
 
+### Phase 9-10.5 layers: all default off, all fail-closed by construction
+
+- **Every flag defaults `False`** (`REQUIRE_CONFIRMATION_FOR_DANGEROUS_
+  COMMANDS`, `ENABLE_INTENT_FALLBACK_LAYER`, `ENABLE_CONTEXT_LAYER`,
+  `ENABLE_REFERENCE_RESOLUTION`) - see "Configuration options" above.
+  With all four off, behavior is byte-for-byte identical to this
+  project's pre-Phase-9 state.
+- **Nothing added since Phase 9 can execute a control module directly.**
+  `intent_layer.py` and `context_manager.py` (Phases 10.2-10.5) are
+  both pure: they only ever render one of the existing, already-safe
+  canonical command strings and hand it back to `CommandProcessor.
+  process()` - the same method, called recursively - never call
+  `web_control`/`system_control`/`window_control`/`volume_control`/
+  `media_control`/`keyboard_control`/`screen_control`/`voice` directly.
+  Verified structurally (import-list inspection, not just convention)
+  by dedicated tests in `tests/test_security.py`.
+- **The Phase 9 dangerous-command gate is unconditional and runs on
+  every `process()` call, including every recursive one** - it is the
+  first behavioral check performed, before the Phase 10.2-10.5 layers
+  ever get a chance to run. A dangerous phrase or paraphrase reached
+  through a pending slot reply, a resolved reference, or a repeated
+  search still hits this gate before anything executes. Verified
+  end-to-end, with every real-action primitive mocked simultaneously,
+  across all combinations of these layers - including all four flags
+  enabled at once (see `PHASE_10_COMPLETE_VALIDATION_REPORT.md`).
+- **Conversational state never clobbers itself.** Phase 10.4's
+  last-named-application memory and Phase 10.5's last-search-query
+  memory are stored in completely separate fields on the same
+  `ConversationContext` object - naming an application and then
+  searching (or vice versa) never erases the other's memory. Directly
+  proven by a regression test: "open chrome" → "search for cats" →
+  "open it" still resolves to Chrome.
+- **All conversational state expires.** A pending slot request
+  (Phase 10.3), a remembered application (Phase 10.4), and a
+  remembered search query (Phase 10.5) each expire on their own
+  independent turn-count/wall-clock bounds
+  (`CONTEXT_SLOT_MAX_TURNS`/`TTL_SECONDS`, `REFERENCE_MAX_TURNS`/
+  `TTL_SECONDS`, `SEARCH_REPEAT_MAX_TURNS`/`TTL_SECONDS`) - a stale
+  record is never silently reused.
+- **No LLM, no external AI service, no new third-party dependency** in
+  any Phase 9-10.5 layer - `intent_layer.py`/`context_manager.py` are
+  plain deterministic regex/dict-based rule modules, the same style as
+  `command_parser.py` since Phase 5. The only Phase 10 dependency
+  decision (`faster_whisper` for offline STT, Phase 10.1) was
+  explicitly deferred and remains uninstalled.
+
 ## Tests
 
 Tests mock `webbrowser.open`, `subprocess.Popen`, `os.system`, the
@@ -695,8 +1232,8 @@ automated tests:
 python -m pytest -q
 ```
 
-**Exact result as of the last verified run (Phase 9):** `435 passed, 2
-warnings in 0.90s` - `0 failed`, `0 skipped`. The 2 warnings are
+**Exact result as of the last verified run (Phase 10.6):** `677
+passed, 2 warnings` - `0 failed`, `0 skipped`. The 2 warnings are
 pre-existing, unrelated `DeprecationWarning`s from inside the
 `speech_recognition` package itself (`aifc`, `audioop`), not from this
 project's code. A dedicated safety-net verification pass - mocking
@@ -718,8 +1255,17 @@ control by application name) finished at `288 passed`. Phase 7
 (absolute volume + true mute/unmute via Core Audio) finished at `346
 passed`. Phase 8 (natural-language synonym extensions + bounded
 multi-clause chaining) finished at `405 passed`. Phase 9 (dangerous-
-command confirmation layer) added 30 tests, finishing at `435 passed`
-- none removed or weakened, 0 failures at any phase boundary.
+command confirmation layer) added 30 tests, finishing at `435 passed`.
+Phase 10.1 (offline STT backend abstraction) and Phase 10.2 (rule-
+based intent fallback layer, including two bug-fixes found during its
+own validation) together brought the suite to `531 passed`. Phase 10.3
+(conversational context / slot-filling) finished at `589 passed`.
+Phase 10.4 (contextual reference resolution) finished at `626 passed`.
+Phase 10.5 (repeat-search + "again"/"once more" phrasing) finished at
+`675 passed`. Phase 10.6 (final integration audit + two new end-to-end
+pipeline tests, documentation-only otherwise) finished at `677
+passed` - none removed or weakened, 0 failures at any phase boundary
+from Phase 5 through Phase 10.6.
 
 ### Manual tests actually performed (Phase 5)
 

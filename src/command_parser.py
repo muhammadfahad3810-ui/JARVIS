@@ -77,7 +77,52 @@ SEARCH_PREFIX_RULES = [
     (re.compile(r"^search\s+(?!for\b)"), "search for "),
 ]
 
+# Keyboard/modifier-key spoken-variation normalization - rewrites a
+# synonym into the single canonical word every downstream handler
+# (keyboard_control.py) already checks for. Each rule is whole-word,
+# word-boundary-anchored ("\b...\b") - never a bare fragment - so it
+# can't rewrite part of an unrelated word (e.g. "escort" is untouched).
+# Deliberately does NOT include "del" -> "delete": that key is left
+# permanently unrecognized as a documented security decision - see
+# keyboard_control.handle()'s own docstring.
+KEY_SYNONYM_RULES = [
+    (re.compile(r"\bcontrol\b"), "ctrl"),
+    (re.compile(r"\besc\b"), "escape"),
+    (re.compile(r"\bback space\b"), "backspace"),
+]
+
 DATE_QUESTION = re.compile(r"^what day is it\b")
+
+# Phase 10.3: "search <site>" with NOTHING after the site name (e.g.
+# "search youtube") must NOT be rewritten by the generic "search X" ->
+# "search for X" rule below - that would turn it into a Google search
+# for the literal word "youtube", which is not what "search youtube"
+# means (it means "search WITHIN YouTube", with no query supplied
+# yet). Left completely unrewritten here so the phrase falls through
+# the entire deterministic dispatch chain unhandled; intent_layer.py's
+# SEARCH_INCOMPLETE_RE then recognizes it as an incomplete SEARCH
+# intent, and the Phase 10.3 context layer (config.ENABLE_CONTEXT_
+# LAYER) asks a follow-up question instead. Deliberately scoped to
+# exactly "search youtube" - the one slot-fillable case Phase 10.3
+# adds - not a general "any known site" exception: "search python",
+# "search google" (unqualified), etc. are completely unaffected and
+# keep rewriting to "search for <x>" exactly as before.
+SEARCH_BARE_SITE_RE = re.compile(r"^search (?:youtube)$")
+
+# Phase 10.5: "search that again" (the exact, single repeat-search
+# trigger phrase - see context_manager.resolve_repeat_search()) must
+# NOT be rewritten by the same generic "search X" -> "search for X"
+# rule either - that would turn it into a literal, wrong Google search
+# for the string "that again", executed immediately by web_control.py
+# before context_manager.py ever gets a chance to resolve it against
+# the last remembered query. Left completely unrewritten here, exactly
+# the same rationale and pattern as SEARCH_BARE_SITE_RE above - this
+# phrase then falls through the entire deterministic dispatch chain
+# unhandled, exactly like "search youtube" does, until the Phase 10.5
+# reference-resolution layer (config.ENABLE_REFERENCE_RESOLUTION) gets
+# a chance to resolve it. Deliberately scoped to exactly this one
+# phrase - not a general "search ... again" exception.
+SEARCH_REPEAT_PHRASE_RE = re.compile(r"^search that again$")
 
 
 def strip_filler(text):
@@ -109,6 +154,17 @@ def strip_filler(text):
         text = new_text
 
 
+def canonicalize_key_synonyms(text):
+    """Rewrite keyboard/modifier-key synonyms ('control' -> 'ctrl',
+    'esc' -> 'escape', 'back space' -> 'backspace') into the single
+    canonical form keyboard_control.handle() checks for."""
+
+    for pattern, replacement in KEY_SYNONYM_RULES:
+        text = pattern.sub(replacement, text)
+
+    return text
+
+
 def canonicalize_date_phrase(text):
     """'what day is it' has no 'date'/'time' substring, so it would
     otherwise fall through to the unknown-command response."""
@@ -122,6 +178,9 @@ def canonicalize_date_phrase(text):
 def canonicalize_search_phrase(text):
     """Rewrite search synonyms ('google X', 'look up X', ...) into the
     'search for X' phrasing web_control.handle() already expects."""
+
+    if SEARCH_BARE_SITE_RE.match(text) or SEARCH_REPEAT_PHRASE_RE.match(text):
+        return text
 
     for pattern, replacement in SEARCH_PREFIX_RULES:
 
@@ -258,6 +317,7 @@ def normalize(text):
     text = re.sub(r"\s+", " ", text)
 
     text = strip_filler(text)
+    text = canonicalize_key_synonyms(text)
     text = canonicalize_date_phrase(text)
     text = canonicalize_search_phrase(text)
     text = canonicalize_set_volume_phrase(text)
