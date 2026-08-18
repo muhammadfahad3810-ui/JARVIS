@@ -26,6 +26,9 @@ calls are mocked throughout.
 
 from unittest.mock import patch
 
+import ai_backend
+import ai_router
+import ai_tools
 import commands
 import jarvis as jarvis_module
 import window_control
@@ -2535,3 +2538,236 @@ def test_whisper_confidence_gate_rejection_prevents_hallucination_from_reaching_
 
     assert result == ""
     assert s.last_diagnostics["whisper_rejected_low_confidence"] is True
+
+
+# =======================================================================
+# PHASE 12.1: AI tool router - hostile/malformed LLM output must never
+# reach a real action handler. NO LLM is connected anywhere in this
+# project yet (see ai_backend.py's own docstring) - these tests use
+# plain Python test doubles (ai_backend.AIBackend subclasses) to prove
+# what happens to REAL hostile input, exactly the same "no real
+# destructive action is ever performed" discipline this whole file
+# already uses for every other section.
+# =======================================================================
+
+class _HostileBackend(ai_backend.AIBackend):
+    """A test double standing in for a compromised/buggy/adversarial
+    LLM provider - returns whatever the test configures, records every
+    command it was asked about."""
+
+    def __init__(self, response=None):
+        self.response = response
+        self.calls = []
+
+    def converse(self, command, context):
+        self.calls.append(command)
+        return self.response
+
+
+def teardown_function(_fn):
+    """Every Phase 12.1 test below registers a backend - always
+    restore the "no backend" default afterward."""
+    ai_backend.register_backend(None)
+
+
+# ---- Task 8: hostile/malformed tool-call rejection (unit level,
+# ai_tools.py's own validation boundary - no backend/router needed) ----
+
+_HOSTILE_TOOL_CALLS = [
+    ({"tool": "run_shell", "arguments": {"command": "rm -rf /"}}, ai_tools.UnknownToolError),
+    ({"tool": "run_powershell", "arguments": {"cmd": "Remove-Item -Recurse C:\\"}}, ai_tools.UnknownToolError),
+    ({"tool": "execute_python", "arguments": {"code": "import os; os.system('shutdown -h now')"}}, ai_tools.UnknownToolError),
+    ({"tool": "open_url", "arguments": {"url": "http://evil.example.com/payload.exe"}}, ai_tools.UnknownToolError),
+    ({"tool": "delete", "arguments": {}}, ai_tools.UnknownToolError),
+    ({"tool": "shutdown", "arguments": {}}, ai_tools.UnknownToolError),
+    ({"tool": "restart", "arguments": {}}, ai_tools.UnknownToolError),
+    ({"tool": "lock", "arguments": {}}, ai_tools.UnknownToolError),
+    ({"tool": "open_application", "arguments": {"application": "; rm -rf / #"}}, ai_tools.InvalidArgumentValueError),
+    ({"tool": "open_application", "arguments": {"application": "../../../windows/system32/cmd.exe"}}, ai_tools.InvalidArgumentValueError),
+    ({"tool": "press_key", "arguments": {"key": "delete"}}, ai_tools.InvalidArgumentValueError),
+    ({"tool": "press_key", "arguments": {"key": "F12"}}, ai_tools.InvalidArgumentValueError),
+    ({"tool": "scroll", "arguments": {"direction": "sideways"}}, ai_tools.InvalidArgumentValueError),
+    ({"tool": "scroll", "arguments": {}}, ai_tools.MissingArgumentError),
+    ({"tool": "scroll", "arguments": {"direction": "down", "amount": "999"}}, ai_tools.UnknownArgumentError),
+    ({"tool": "scroll", "arguments": {"direction": ["down"]}}, ai_tools.InvalidArgumentTypeError),
+    ({"tool": "scroll", "arguments": {"direction": {"nested": "down"}}}, ai_tools.InvalidArgumentTypeError),
+    ({"tool": 12345, "arguments": {}}, ai_tools.MalformedToolCallError),
+    ({"arguments": {"direction": "down"}}, ai_tools.MalformedToolCallError),
+    ("scroll down", ai_tools.MalformedToolCallError),
+]
+
+
+def test_every_hostile_or_malformed_tool_call_is_rejected():
+    for raw, expected_error in _HOSTILE_TOOL_CALLS:
+        try:
+            ai_tools.process_tool_call(raw)
+            assert False, f"expected {expected_error.__name__} for {raw!r}"
+        except expected_error:
+            pass
+
+
+def test_valid_tool_call_is_accepted():
+    assert (
+        ai_tools.process_tool_call({"tool": "scroll", "arguments": {"direction": "down"}})
+        == "scroll down"
+    )
+
+
+def test_valid_tool_with_invalid_enum_is_rejected():
+    try:
+        ai_tools.process_tool_call(
+            {"tool": "tab_navigation", "arguments": {"direction": "sideways"}}
+        )
+        assert False, "expected rejection"
+    except ai_tools.InvalidArgumentValueError:
+        pass
+
+
+def test_valid_search_query_with_shell_looking_text_is_never_executed():
+    """Task 8's explicit case: a shell-injection-shaped search query
+    must be treated ONLY as URL-encoded search text."""
+    canonical = ai_tools.process_tool_call(
+        {"tool": "search", "arguments": {"query": "; rm -rf / #"}}
+    )
+    assert canonical == "search for ; rm -rf / #"
+
+
+# ---- End-to-end through the real dispatcher: a hostile backend's
+# output never reaches a real action handler ----
+
+def test_hostile_backend_shell_command_tool_never_reaches_a_real_handler():
+    processor, voice = make_processor()
+    ai_backend.register_backend(
+        _HostileBackend(
+            response=ai_backend.AIResponse.tool(
+                "run_shell", {"command": "rm -rf / --no-preserve-root"}
+            )
+        )
+    )
+
+    import config
+
+    with patch.object(config, "ENABLE_AI_LAYER", True), \
+         patch("system_control.subprocess.Popen") as mock_popen, \
+         patch("system_control.os.system") as mock_system:
+        result = processor.process("please help me with something")
+
+    assert result is True
+    mock_popen.assert_not_called()
+    mock_system.assert_not_called()
+    assert voice.spoken == ["I heard you, but I don't know how to do that yet."]
+
+
+def test_hostile_backend_powershell_tool_never_reaches_a_real_handler():
+    processor, voice = make_processor()
+    ai_backend.register_backend(
+        _HostileBackend(
+            response=ai_backend.AIResponse.tool(
+                "run_powershell", {"cmd": "Remove-Item -Recurse -Force C:\\"}
+            )
+        )
+    )
+
+    import config
+
+    with patch.object(config, "ENABLE_AI_LAYER", True), \
+         patch("system_control.subprocess.Popen") as mock_popen:
+        result = processor.process("please help me with something")
+
+    assert result is True
+    mock_popen.assert_not_called()
+
+
+def test_hostile_backend_python_exec_tool_never_reaches_a_real_handler():
+    processor, voice = make_processor()
+    ai_backend.register_backend(
+        _HostileBackend(
+            response=ai_backend.AIResponse.tool(
+                "execute_python", {"code": "import os; os.system('shutdown -h now')"}
+            )
+        )
+    )
+
+    import config
+
+    with patch.object(config, "ENABLE_AI_LAYER", True), \
+         patch("system_control.os.system") as mock_system:
+        result = processor.process("please help me with something")
+
+    assert result is True
+    mock_system.assert_not_called()
+
+
+def test_hostile_backend_dangerous_action_tool_names_never_reach_a_real_handler():
+    import config
+
+    for tool_name in ("delete", "shutdown", "restart", "lock"):
+        processor, voice = make_processor()
+        ai_backend.register_backend(
+            _HostileBackend(response=ai_backend.AIResponse.tool(tool_name, {}))
+        )
+
+        with patch.object(config, "ENABLE_AI_LAYER", True), \
+             patch("system_control.os.system") as mock_system, \
+             patch("window_control.user32.ShowWindow") as mock_show, \
+             patch("window_control.user32.PostMessageW") as mock_post:
+            processor.process("please help me with something")
+
+        mock_system.assert_not_called()
+        mock_show.assert_not_called()
+        mock_post.assert_not_called()
+
+        ai_backend.register_backend(None)
+
+
+def test_hostile_backend_invalid_application_never_opens_anything():
+    processor, voice = make_processor()
+    ai_backend.register_backend(
+        _HostileBackend(
+            response=ai_backend.AIResponse.tool(
+                "open_application", {"application": "malware.exe"}
+            )
+        )
+    )
+
+    import config
+
+    with patch.object(config, "ENABLE_AI_LAYER", True), \
+         patch("system_control.subprocess.Popen") as mock_popen, \
+         patch("web_control.webbrowser.open") as mock_open:
+        result = processor.process("please help me with something")
+
+    assert result is True
+    mock_popen.assert_not_called()
+    mock_open.assert_not_called()
+
+
+def test_hostile_backend_invalid_key_never_sends_a_keypress():
+    processor, voice = make_processor()
+    ai_backend.register_backend(
+        _HostileBackend(response=ai_backend.AIResponse.tool("press_key", {"key": "delete"}))
+    )
+
+    import config
+
+    with patch.object(config, "ENABLE_AI_LAYER", True), \
+         patch("keyboard_control.input_control.press_key") as mock_press:
+        result = processor.process("please help me with something")
+
+    assert result is True
+    mock_press.assert_not_called()
+
+
+def test_ai_layer_off_by_default_ignores_a_registered_hostile_backend():
+    """Even with a hostile backend registered, config.ENABLE_AI_LAYER's
+    default False means it is never consulted at all."""
+    processor, voice = make_processor()
+    hostile = _HostileBackend(
+        response=ai_backend.AIResponse.tool("run_shell", {"command": "rm -rf /"})
+    )
+    ai_backend.register_backend(hostile)
+
+    result = processor.process("please help me with something")
+
+    assert result is True
+    assert hostile.calls == []

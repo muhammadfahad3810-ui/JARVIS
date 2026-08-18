@@ -1,6 +1,8 @@
 import contextlib
 from unittest.mock import call, patch
 
+import ai_backend
+import ai_router
 import commands
 import config
 import context_manager
@@ -4861,3 +4863,223 @@ def test_tts_layer_never_receives_urdu_script_for_the_four_worked_examples():
 
             for call_args in fake_backend.speak.call_args_list:
                 assert call_args.args[0].isascii()
+
+
+# =======================================================================
+# PHASE 12.1: AI router integration - deterministic-first routing,
+# Phase 9 defense-in-depth, and flag-off/no-backend inertness.
+#
+# NO LLM is connected anywhere in these tests - "backends" registered
+# below are plain Python test doubles (ai_backend.AIBackend subclasses),
+# the same kind of fake this project already uses for Voice/KokoroBackend
+# in test_voice.py. Production code registers no backend at all in this
+# phase (see ai_backend.py's own docstring).
+# =======================================================================
+
+class _SpyBackend(ai_backend.AIBackend):
+    """Records every command it was asked about - used to PROVE the AI
+    router is never even consulted for commands the deterministic chain
+    already recognizes (Task 7), not just that its result is unused."""
+
+    def __init__(self, response=None):
+        self.response = response
+        self.calls = []
+
+    def converse(self, command, context):
+        self.calls.append(command)
+        return self.response
+
+
+def teardown_function(_fn):
+    """Every Phase 12.1 test below registers a backend - always
+    restore the "no backend" default afterward so later tests in this
+    (very large) file never see a leftover fake backend."""
+    ai_backend.register_backend(None)
+
+
+# ---- Task 7: deterministic-first routing ----
+
+def test_deterministic_commands_never_reach_the_ai_router_even_when_enabled():
+    """The five commands the task spec explicitly names as "must
+    continue using the deterministic path" - proven by a spy backend
+    that would record ANY consultation, with config.ENABLE_AI_LAYER
+    explicitly True (the router is positioned last in process()'s
+    chain specifically so this holds regardless of the flag)."""
+    processor, voice = make_processor()
+    spy = _SpyBackend()
+    ai_backend.register_backend(spy)
+
+    deterministic_commands = [
+        "open chrome", "scroll down", "close tab", "next tab", "press enter",
+    ]
+
+    with patch.object(config, "ENABLE_AI_LAYER", True), \
+         patch("web_control.os.path.exists", return_value=False), \
+         patch("web_control.webbrowser.open"), \
+         patch("web_control.input_control.press_key_combo", return_value=True), \
+         patch("keyboard_control.input_control.press_key", return_value=True):
+        for command in deterministic_commands:
+            processor.process(command)
+
+    assert spy.calls == []
+
+
+def test_ai_router_is_only_consulted_after_deterministic_chain_fails():
+    """The positive case: a genuinely unrecognized utterance DOES
+    reach the router when the flag is on and a backend is registered."""
+    processor, voice = make_processor()
+    spy = _SpyBackend(response=ai_backend.AIResponse.speak("I'm not sure how to help with that."))
+    ai_backend.register_backend(spy)
+
+    with patch.object(config, "ENABLE_AI_LAYER", True):
+        result = processor.process("tell me a joke about compilers")
+
+    assert result is True
+    assert spy.calls == ["tell me a joke about compilers"]
+    assert voice.spoken == ["I'm not sure how to help with that."]
+
+
+# ---- Flag off / no backend: fully inert, byte-for-byte unchanged ----
+
+def test_ai_layer_disabled_by_default_never_consults_any_backend():
+    processor, voice = make_processor()
+    spy = _SpyBackend(response=ai_backend.AIResponse.speak("should never be heard"))
+    ai_backend.register_backend(spy)
+
+    result = processor.process("something totally unrecognized xyz123")
+
+    assert result is True
+    assert spy.calls == []
+    assert voice.spoken == ["I heard you, but I don't know how to do that yet."]
+
+
+def test_ai_layer_enabled_but_no_backend_registered_falls_through_unchanged():
+    """The ACTUAL current production configuration if someone flips
+    the flag today: no backend is registered anywhere in this phase,
+    so behavior is unchanged even with the flag on."""
+    processor, voice = make_processor()
+
+    with patch.object(config, "ENABLE_AI_LAYER", True):
+        result = processor.process("something totally unrecognized xyz123")
+
+    assert result is True
+    assert voice.spoken == ["I heard you, but I don't know how to do that yet."]
+
+
+# ---- AI-resolved tool calls execute through the REAL existing
+# handlers, and recurse through process() (not called directly) ----
+
+def test_ai_tool_call_dispatches_through_the_real_existing_handler():
+    processor, voice = make_processor()
+    ai_backend.register_backend(
+        _SpyBackend(response=ai_backend.AIResponse.tool("scroll", {"direction": "down"}))
+    )
+
+    with patch.object(config, "ENABLE_AI_LAYER", True), \
+         patch("keyboard_control.input_control.press_key", return_value=True) as mock_press:
+        result = processor.process("scroll the page down for me please")
+
+    assert result is True
+    mock_press.assert_called_once_with(input_control.VK_NEXT)
+    assert voice.spoken == ["Scrolling down."]
+
+
+def test_ai_tool_call_open_application_dispatches_through_real_handler():
+    processor, voice = make_processor()
+    ai_backend.register_backend(
+        _SpyBackend(
+            response=ai_backend.AIResponse.tool("open_application", {"application": "chrome"})
+        )
+    )
+
+    with patch.object(config, "ENABLE_AI_LAYER", True), \
+         patch("web_control.os.path.exists", return_value=False), \
+         patch("web_control.webbrowser.open") as mock_open:
+        result = processor.process("could you get chrome open for me")
+
+    assert result is True
+    mock_open.assert_called_once()
+    assert voice.spoken == ["Opening Chrome."]
+
+
+# ---- Task 8 / defense in depth: the Phase 9 gate remains authoritative
+# even for an AI-originated canonical command, including a HYPOTHETICAL
+# ai_router bug that bypasses ai_tools entirely ----
+
+def test_hostile_tool_call_naming_a_dangerous_action_never_executes():
+    """A backend that tries to request "shutdown"/"lock"/"restart" as a
+    tool name is rejected by ai_tools (UnknownToolError, since no such
+    tool is registered) before it ever reaches commands.py at all. The
+    user utterance here is deliberately unrelated to any dangerous
+    phrase - the point under test is what a HOSTILE BACKEND requests,
+    regardless of what the user actually said (a phrase like "shut down
+    my computer" would instead be caught by the existing, unrelated
+    intent-layer dangerous-command detection before the AI router is
+    ever reached at all - see the deterministic-first tests above)."""
+    processor, voice = make_processor()
+    ai_backend.register_backend(
+        _SpyBackend(response=ai_backend.AIResponse.tool("shutdown_computer", {}))
+    )
+
+    with patch.object(config, "ENABLE_AI_LAYER", True), \
+         patch("system_control.os.system") as mock_system:
+        result = processor.process("please do the thing we discussed earlier")
+
+    assert result is True
+    mock_system.assert_not_called()
+    assert voice.spoken == ["I heard you, but I don't know how to do that yet."]
+
+
+def test_phase_9_gate_still_fires_even_if_ai_router_itself_were_buggy():
+    """Defense in depth (Task 8/Task 5): this simulates a HYPOTHETICAL
+    bug in ai_router.py itself that somehow bypassed ai_tools validation
+    and directly returned a COMMAND outcome of "lock computer" - proving
+    that even in that scenario, the Phase 9 gate (checked at the very
+    top of process(), before this recursive call is any different from
+    any other) still intercepts it, exactly like it does for every
+    other fallback layer's output. ai_tools itself already makes this
+    scenario structurally impossible (see test_ai_tools.py's exhaustive
+    sweep) - this test is the second, independent layer of proof."""
+    processor, voice = make_processor()
+
+    with patch.object(config, "ENABLE_AI_LAYER", True), \
+         patch.object(config, "REQUIRE_CONFIRMATION_FOR_DANGEROUS_COMMANDS", True), \
+         patch(
+             "ai_router.handle",
+             return_value=ai_router.RoutingOutcome(
+                 ai_router.RoutingOutcome.COMMAND, "lock computer"
+             ),
+         ), \
+         patch("system_control.os.system") as mock_system:
+        result = processor.process("something the deterministic chain can't recognize")
+
+    assert result is True
+    mock_system.assert_not_called()
+    assert "sure" in voice.spoken[-1].lower()
+    assert "lock" in voice.spoken[-1].lower()
+
+
+# ---- AI text responses are spoken directly, never re-enter process() ----
+
+def test_ai_text_response_is_spoken_directly_never_treated_as_a_command():
+    """Even if the AI's free-text response happens to contain what
+    looks like a command phrase, it must only ever be spoken - never
+    fed back through process() (which could otherwise execute it)."""
+    processor, voice = make_processor()
+    ai_backend.register_backend(
+        _SpyBackend(
+            response=ai_backend.AIResponse.speak(
+                "I could open chrome for you, just ask me to!"
+            )
+        )
+    )
+
+    with patch.object(config, "ENABLE_AI_LAYER", True), \
+         patch("web_control.webbrowser.open") as mock_open, \
+         patch("web_control.subprocess.Popen") as mock_popen:
+        result = processor.process("what can you help me with")
+
+    assert result is True
+    mock_open.assert_not_called()
+    mock_popen.assert_not_called()
+    assert voice.spoken == ["I could open chrome for you, just ask me to!"]

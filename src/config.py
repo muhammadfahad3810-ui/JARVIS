@@ -435,3 +435,27 @@ ENABLE_WAKE_WORD_OMISSION_TOLERANCE = False
 ENABLE_WHISPER_CONFIDENCE_GATE = False
 WHISPER_MAX_NO_SPEECH_PROB = 0.6
 WHISPER_MIN_AVG_LOGPROB = -1.0
+
+# Phase 12.1: AI router (see ai_router.py/ai_tools.py/ai_backend.py).
+# Only ever consulted after the ENTIRE existing deterministic pipeline
+# (clause splitting, command_parser.normalize(), the fixed dispatch
+# chain, the intent fallback layer, the multilingual layer, reference
+# resolution) has already failed to recognize a command - see
+# commands.py's insertion point, immediately before the final "I don't
+# know how to do that yet." fallback. A tool call the AI layer produces
+# is validated against ai_tools.TOOL_REGISTRY's closed allow-list and
+# rendered to one of the exact same canonical command strings the
+# dispatch chain already understands before being handed back to
+# CommandProcessor.process() - so the Phase 9 dangerous-command gate
+# cannot be bypassed by anything this layer produces (see ai_router.py's
+# own docstring for the complete security model).
+#
+# Default False, and safe to enable even so: Phase 12.1 registers NO
+# AI backend at all (see ai_backend.get_backend() - always returns None
+# right now), so with this flag True today, ai_router.handle() still
+# always returns None and behavior is unchanged - no LLM is connected
+# until a future phase explicitly registers one. Matches how every
+# flag before it (Phase 9 through 11.11) shipped default-off until
+# dedicated validation, with the added property that THIS ONE currently
+# has no way to do anything even if turned on.
+ENABLE_AI_LAYER = False

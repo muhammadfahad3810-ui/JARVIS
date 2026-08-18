@@ -1350,3 +1350,73 @@ call included (pays model-load + provider warmup once):
 Every typical JARVIS response (a handful of words) synthesizes in
 under a second after the one-time model-load cost, which is comparable
 to pyttsx3's own already-blocking `runAndWait()` latency.
+
+## Phase 12.1 — AI Tool Router (infrastructure only, no LLM connected)
+
+`ai_tools.py`/`ai_backend.py`/`ai_router.py` are safe infrastructure
+for a *future* AI reasoning layer - **no LLM is installed, downloaded,
+or connected anywhere in this codebase as of Phase 12.1.**
+`config.ENABLE_AI_LAYER` defaults to `False`, and even if set `True`,
+`ai_backend.get_backend()` has nothing registered, so the layer is
+inert either way until a future phase explicitly wires a real provider
+in.
+
+### Security model
+
+- **LLM output is untrusted.** Every function that accepts a tool name
+  or arguments treats them as hostile input by default, exactly like
+  every other externally-derived input in this project (spoken text,
+  STT transcripts).
+- **Only explicitly allow-listed tools can execute.** `ai_tools.
+  TOOL_REGISTRY` is a fixed, closed dict - `open_application`,
+  `press_key`, `scroll`, `mouse_action`, `volume`, `media`,
+  `tab_navigation`, `browser_navigation`, `refresh`, `search`. An
+  unrecognized tool name is rejected (`UnknownToolError`), never
+  guessed at.
+- **Python validates all tool names and arguments.** `ai_tools.
+  validate_tool_call()` is the one validation boundary every tool
+  request must pass through - closed-enum arguments reuse this
+  project's existing allow-lists (`intent_parser.KNOWN_APPLICATIONS`,
+  `intent_parser.KNOWN_KEYS` - "delete" is not and will not be added to
+  the latter) wherever one already exists, rather than defining a
+  second list that could drift.
+- **The LLM cannot execute arbitrary OS commands.** No tool exists for
+  shell/PowerShell/Python execution, arbitrary file paths, or arbitrary
+  URLs-as-actions. Every tool's `render()` function reuses an
+  EXISTING, already-tested deterministic handler's canonical command
+  string - this layer never implements a second copy of any action,
+  and never calls a control module directly.
+- **Existing Phase 9 security remains authoritative.** A validated tool
+  call is rendered to a canonical command string and handed back to
+  `CommandProcessor.process()` - the exact same recursive pattern
+  `intent_layer.py`/`multilingual_normalizer.py` already use - so the
+  Phase 9 dangerous-command gate (the unconditional first check on
+  every `process()` call, including recursive ones) sees it too. No
+  tool in `TOOL_REGISTRY` can render `"lock computer"`/`"shutdown
+  computer"`/`"restart computer"` - lock/shutdown/restart remain
+  deterministic-phrase-only, by construction, not by policy alone (see
+  `tests/test_ai_tools.py`'s exhaustive sweep proving this).
+- **Search is the only free-form argument and is URL-encoded.**
+  `search(query)` is the sole intentional exception to closed-enum
+  arguments - `query` is free text because `web_control.search()`
+  already only ever URL-encodes it into a Google search link and hands
+  it to `webbrowser.open()`, never to `subprocess`/`os.system`/`eval`/
+  `exec`. A shell-injection-shaped query (e.g. `"; rm -rf / #"`)
+  becomes nothing more than an unusual-looking search query string -
+  see `tests/test_ai_tools.py`'s and `tests/test_security.py`'s
+  dedicated tests proving this directly, not just asserting it.
+- **Deterministic-first, structurally.** The AI router (`ai_router.
+  handle()`) is only ever consulted from the LAST position in
+  `commands.py`'s dispatch chain, after clause splitting, normalize(),
+  the fixed dispatch chain, the intent fallback layer, the
+  multilingual layer, and reference resolution have all already failed
+  to recognize the command. "open chrome", "scroll down", "close tab",
+  "next tab", "press enter" (and everything else the deterministic
+  chain already handles) never reach the AI layer at all - proven by a
+  spy backend in `tests/test_commands.py` that would record any
+  consultation.
+- **A text response is spoken, never executed.** If a future backend
+  returns plain conversational text (`AIResponse.speak()`), it is
+  handed straight to `voice.speak()` and is NEVER fed back through
+  `CommandProcessor.process()` - even if the text happens to contain a
+  phrase that looks like a command, it cannot self-execute.

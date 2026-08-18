@@ -1,6 +1,7 @@
 import datetime
 import re
 
+import ai_router
 import command_parser
 import config
 import context_manager
@@ -624,6 +625,43 @@ class CommandProcessor:
 
             if resolved:
                 return self.process(resolved)
+
+        # AI ROUTER (Phase 12.1) - only reached once the ENTIRE
+        # deterministic chain above (clause splitting, normalize(), the
+        # fixed dispatch chain, the intent fallback layer, the
+        # multilingual layer, reference resolution) has already failed
+        # to recognize `command`. See ai_router.py's own docstring for
+        # the complete security model - in short: a tool-call outcome
+        # is ALREADY validated against ai_tools.TOOL_REGISTRY's closed
+        # allow-list and rendered to a canonical command string by the
+        # time it reaches here, and is fed back into THIS SAME
+        # process() method (recursively), so the Phase 9 dangerous-
+        # command gate at the very top of process() - which runs on
+        # every call, including this recursive one - cannot be
+        # bypassed by anything this layer produces. A speech outcome is
+        # spoken DIRECTLY and deliberately never recurses through
+        # process() - see ai_router.RoutingOutcome's own docstring for
+        # why blurring that distinction would be unsafe.
+        #
+        # Default off (config.ENABLE_AI_LAYER) - when off, this block
+        # never executes and behavior is byte-for-byte unchanged from
+        # before Phase 12.1. Even when on, Phase 12.1 registers NO AI
+        # backend at all (see ai_backend.get_backend()), so ai_router.
+        # handle() always returns None today regardless - this hook
+        # exists now so a future phase can register a real backend
+        # without any further changes to this dispatch chain.
+        if config.ENABLE_AI_LAYER:
+
+            outcome = ai_router.handle(command, self._context)
+
+            if outcome is not None:
+
+                if outcome.kind == ai_router.RoutingOutcome.COMMAND:
+                    return self.process(outcome.value)
+
+                if outcome.kind == ai_router.RoutingOutcome.SPEECH:
+                    self.voice.speak(outcome.value)
+                    return True
 
         # UNKNOWN
         self.voice.speak(
