@@ -14,52 +14,52 @@ MOVE_STEP_PIXELS = 50
 
 def click(voice):
 
-    voice.speak("Clicking.")
-
     input_control.click_mouse()
+
+    voice.speak("Clicking.")
 
 
 def double_click(voice):
 
-    voice.speak("Double clicking.")
+    input_control.click_mouse()
+    input_control.click_mouse()
 
-    input_control.click_mouse()
-    input_control.click_mouse()
+    voice.speak("Double clicking.")
 
 
 def right_click(voice):
 
-    voice.speak("Right clicking.")
-
     input_control.right_click_mouse()
+
+    voice.speak("Right clicking.")
 
 
 def move_left(voice):
 
-    voice.speak("Moving left.")
-
     input_control.move_mouse_by(-MOVE_STEP_PIXELS, 0)
+
+    voice.speak("Moving left.")
 
 
 def move_right(voice):
 
-    voice.speak("Moving right.")
-
     input_control.move_mouse_by(MOVE_STEP_PIXELS, 0)
+
+    voice.speak("Moving right.")
 
 
 def move_up(voice):
 
-    voice.speak("Moving up.")
-
     input_control.move_mouse_by(0, -MOVE_STEP_PIXELS)
+
+    voice.speak("Moving up.")
 
 
 def move_down(voice):
 
-    voice.speak("Moving down.")
-
     input_control.move_mouse_by(0, MOVE_STEP_PIXELS)
+
+    voice.speak("Moving down.")
 
 
 def handle(command, voice):

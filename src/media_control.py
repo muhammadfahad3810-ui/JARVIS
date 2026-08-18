@@ -5,23 +5,23 @@ import input_control
 
 def play_pause(voice):
 
-    voice.speak("Toggling play and pause.")
-
     input_control.press_key(input_control.VK_MEDIA_PLAY_PAUSE)
+
+    voice.speak("Toggling play and pause.")
 
 
 def next_track(voice):
 
-    voice.speak("Playing the next track.")
-
     input_control.press_key(input_control.VK_MEDIA_NEXT_TRACK)
+
+    voice.speak("Playing the next track.")
 
 
 def previous_track(voice):
 
-    voice.speak("Playing the previous track.")
-
     input_control.press_key(input_control.VK_MEDIA_PREV_TRACK)
+
+    voice.speak("Playing the previous track.")
 
 
 def handle(command, voice):

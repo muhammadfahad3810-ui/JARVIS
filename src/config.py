@@ -112,6 +112,20 @@ TTS_SPEED = 1.0
 # dependency decision exactly like OFFLINE_STT_DEVICE's own.
 TTS_DEVICE = "cpu"
 
+# Phase 11.14: if voice.Voice.speak() is asked to speak the exact same
+# text twice within this many seconds, the second call is not re-
+# synthesized/re-played (defense against an accidental duplicate
+# dispatch producing the same response twice in quick succession -
+# never observed as an actual bug in this codebase, but cheap and safe
+# to guard against). Deliberately short - this must never suppress a
+# genuinely repeated command ("jarvis scroll down" said twice on
+# purpose a few seconds apart must always both scroll) - same
+# "cooldown, not a permanent block" shape as speech.
+# REQUEST_ERROR_ANNOUNCE_COOLDOWN, just a much shorter window since
+# this guards against near-simultaneous accidental duplicates, not a
+# slow network retry loop.
+DUPLICATE_SPEECH_SUPPRESS_SECONDS = 2.0
+
 # Diagnostics - when True, prints extra pipeline details (normalized
 # command, wake-word match info) to the console. Off by default so
 # normal output stays clean.

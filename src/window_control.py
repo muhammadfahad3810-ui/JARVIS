@@ -58,62 +58,62 @@ def _foreground_window():
 
 def minimize_window(voice):
 
-    voice.speak("Minimizing the window.")
-
     hwnd = _foreground_window()
 
     if hwnd:
         user32.ShowWindow(hwnd, SW_MINIMIZE)
 
+    voice.speak("Minimizing the window.")
+
 
 def maximize_window(voice):
-
-    voice.speak("Maximizing the window.")
 
     hwnd = _foreground_window()
 
     if hwnd:
         user32.ShowWindow(hwnd, SW_MAXIMIZE)
 
+    voice.speak("Maximizing the window.")
+
 
 def restore_window(voice):
-
-    voice.speak("Restoring the window.")
 
     hwnd = _foreground_window()
 
     if hwnd:
         user32.ShowWindow(hwnd, SW_RESTORE)
 
+    voice.speak("Restoring the window.")
+
 
 def close_window(voice):
-
-    voice.speak("Closing the window.")
 
     hwnd = _foreground_window()
 
     if hwnd:
         user32.PostMessageW(hwnd, WM_CLOSE, 0, 0)
 
+    voice.speak("Closing the window.")
+
 
 def switch_window(voice):
-
-    voice.speak("Switching window.")
 
     input_control.press_key_combo(
         input_control.VK_MENU,
         input_control.VK_TAB
     )
 
+    voice.speak("Switching window.")
+
 
 def show_desktop(voice):
-
-    voice.speak("Showing the desktop.")
 
     input_control.press_key_combo(
         input_control.VK_LWIN,
         input_control.VK_KEY_D
     )
+
+    voice.speak("Showing the desktop.")
 
 
 def handle(command, voice):
@@ -263,9 +263,9 @@ def minimize_window_by_name(app_name, voice):
     if hwnd is None:
         return
 
-    voice.speak(f"Minimizing {app_name.title()}.")
-
     user32.ShowWindow(hwnd, SW_MINIMIZE)
+
+    voice.speak(f"Minimizing {app_name.title()}.")
 
 
 def maximize_window_by_name(app_name, voice):
@@ -275,9 +275,9 @@ def maximize_window_by_name(app_name, voice):
     if hwnd is None:
         return
 
-    voice.speak(f"Maximizing {app_name.title()}.")
-
     user32.ShowWindow(hwnd, SW_MAXIMIZE)
+
+    voice.speak(f"Maximizing {app_name.title()}.")
 
 
 def restore_window_by_name(app_name, voice):
@@ -287,9 +287,9 @@ def restore_window_by_name(app_name, voice):
     if hwnd is None:
         return
 
-    voice.speak(f"Restoring {app_name.title()}.")
-
     user32.ShowWindow(hwnd, SW_RESTORE)
+
+    voice.speak(f"Restoring {app_name.title()}.")
 
 
 def close_window_by_name(app_name, voice):
@@ -299,9 +299,9 @@ def close_window_by_name(app_name, voice):
     if hwnd is None:
         return
 
-    voice.speak(f"Closing {app_name.title()}.")
-
     user32.PostMessageW(hwnd, WM_CLOSE, 0, 0)
+
+    voice.speak(f"Closing {app_name.title()}.")
 
 
 def switch_to_window_by_name(app_name, voice):
@@ -311,11 +311,11 @@ def switch_to_window_by_name(app_name, voice):
     if hwnd is None:
         return
 
-    voice.speak(f"Switching to {app_name.title()}.")
-
     # Restore first in case it's minimized, then bring it to the front.
     user32.ShowWindow(hwnd, SW_RESTORE)
     user32.SetForegroundWindow(hwnd)
+
+    voice.speak(f"Switching to {app_name.title()}.")
 
 
 def _find_known_application_in(command):

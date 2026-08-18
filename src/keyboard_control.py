@@ -10,52 +10,50 @@ import input_control
 
 def press_enter(voice):
 
-    voice.speak("Pressing Enter.")
-
     input_control.press_key(input_control.VK_RETURN)
+
+    voice.speak("Pressing Enter.")
 
 
 def press_escape(voice):
 
-    voice.speak("Pressing Escape.")
-
     input_control.press_key(input_control.VK_ESCAPE)
+
+    voice.speak("Pressing Escape.")
 
 
 def press_space(voice):
 
-    voice.speak("Pressing Space.")
-
     input_control.press_key(input_control.VK_SPACE)
+
+    voice.speak("Pressing Space.")
 
 
 def press_tab(voice):
 
-    voice.speak("Pressing Tab.")
-
     input_control.press_key(input_control.VK_TAB)
+
+    voice.speak("Pressing Tab.")
 
 
 def press_backspace(voice):
 
-    voice.speak("Pressing Backspace.")
-
     input_control.press_key(input_control.VK_BACK)
+
+    voice.speak("Pressing Backspace.")
 
 
 def press_alt_tab(voice):
-
-    voice.speak("Pressing Alt Tab.")
 
     input_control.press_key_combo(
         input_control.VK_MENU,
         input_control.VK_TAB
     )
 
+    voice.speak("Pressing Alt Tab.")
+
 
 def press_ctrl_shift_escape(voice):
-
-    voice.speak("Pressing Control Shift Escape.")
 
     input_control.press_key_combo(
         input_control.VK_CONTROL,
@@ -63,69 +61,71 @@ def press_ctrl_shift_escape(voice):
         input_control.VK_ESCAPE
     )
 
+    voice.speak("Pressing Control Shift Escape.")
+
 
 def cut(voice):
-
-    voice.speak("Cutting.")
 
     input_control.press_key_combo(
         input_control.VK_CONTROL,
         input_control.VK_KEY_X
     )
 
+    voice.speak("Cutting.")
+
 
 def copy(voice):
-
-    voice.speak("Copying.")
 
     input_control.press_key_combo(
         input_control.VK_CONTROL,
         input_control.VK_KEY_C
     )
 
+    voice.speak("Copying.")
+
 
 def paste(voice):
-
-    voice.speak("Pasting.")
 
     input_control.press_key_combo(
         input_control.VK_CONTROL,
         input_control.VK_KEY_V
     )
 
+    voice.speak("Pasting.")
+
 
 def select_all(voice):
-
-    voice.speak("Selecting all.")
 
     input_control.press_key_combo(
         input_control.VK_CONTROL,
         input_control.VK_KEY_A
     )
 
+    voice.speak("Selecting all.")
+
 
 def undo(voice):
-
-    voice.speak("Undoing.")
 
     input_control.press_key_combo(
         input_control.VK_CONTROL,
         input_control.VK_KEY_Z
     )
 
+    voice.speak("Undoing.")
+
 
 def scroll_up(voice):
 
-    voice.speak("Scrolling up.")
-
     input_control.press_key(input_control.VK_PRIOR)
+
+    voice.speak("Scrolling up.")
 
 
 def scroll_down(voice):
 
-    voice.speak("Scrolling down.")
-
     input_control.press_key(input_control.VK_NEXT)
+
+    voice.speak("Scrolling down.")
 
 
 def handle(command, voice):

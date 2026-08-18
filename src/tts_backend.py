@@ -23,6 +23,7 @@ on failure, and is never a file this project writes into git-tracked
 storage.
 """
 
+import glob
 import os
 import tempfile
 import wave
@@ -37,6 +38,12 @@ MODEL_PATH = os.path.join(_PROJECT_ROOT, "models", "tts", "kokoro-v1.0.onnx")
 VOICES_PATH = os.path.join(_PROJECT_ROOT, "models", "tts", "voices-v1.0.bin")
 
 SAMPLE_RATE_HZ = 24000  # Kokoro's fixed output sample rate.
+
+# Phase 11.14: every temp WAV this module writes uses this recognizable
+# prefix (see _play() below), so cleanup_orphaned_temp_files() can find
+# and remove ONLY files this project created - never touching unrelated
+# files that happen to already be in the OS temp directory.
+TEMP_FILE_PREFIX = "jarvis_tts_"
 
 
 class KokoroBackend:
@@ -95,6 +102,24 @@ class KokoroBackend:
 
         return self._kokoro
 
+    def warm_up(self):
+        """Phase 11.14: force the model to load NOW rather than lazily
+        on the first speak() call. Measured cold-load-plus-first-
+        synthesis cost is ~2-3s (see the Phase 11.13 audit report) -
+        without this, that cost lands on whatever the first real spoken
+        response happens to be, which for most control modules speaks
+        BEFORE performing the action (see e.g. keyboard_control.py),
+        so an unlucky first command could feel sluggish. voice.Voice.
+        __init__() calls this once, during JARVIS startup (alongside
+        the existing microphone-calibration delay), so every actual
+        command response only ever pays the warm (~0.7-1.5s) cost.
+        Never raises internally, but does not catch anything itself -
+        see voice.py's own try/except around this call, which treats a
+        failure here as "this backend isn't usable this session" and
+        falls back to pyttsx3 for the whole session, not just once."""
+
+        self._load()
+
     def synthesize(self, text, voice, speed):
         """Return (samples, sample_rate) - `samples` is a 1-D float32
         numpy array in [-1, 1]. Never plays or writes anything to disk
@@ -114,6 +139,54 @@ class KokoroBackend:
 
         _play(samples, sample_rate, volume)
 
+    def stop(self):
+        """Stop any currently-playing Kokoro-synthesized audio. Safe to
+        call at any time, including when nothing is playing (a no-op in
+        that case) - see stop_playback()'s own docstring for why this
+        is a clean, low-risk addition rather than a new threading/
+        interruption framework."""
+
+        stop_playback()
+
+
+def stop_playback():
+    """Immediately stop any sound currently playing via winsound (the
+    mechanism _play() below uses) - a plain, stdlib-only wrapper around
+    winsound's own SND_PURGE flag. Deliberately NOT wired into any new
+    background-thread/async playback machinery: this project's speech
+    stays synchronous (see voice.py's own docstring), so today nothing
+    OTHER than the thread already blocked inside a speak() call could
+    ever call this concurrently - it exists as a clean, always-safe
+    primitive for a future caller (e.g. a signal handler) rather than
+    solving a problem this phase's synchronous architecture actually
+    has. Never raises."""
+
+    import winsound
+
+    try:
+        winsound.PlaySound(None, winsound.SND_PURGE)
+    except Exception:
+        pass
+
+
+def cleanup_orphaned_temp_files():
+    """Best-effort removal of any TEMP_FILE_PREFIX-named WAV files left
+    behind in the OS temp directory by a previous run that crashed (or
+    was killed) between _play() writing the file and its own `finally:
+    os.remove(path)` running. Normal operation already removes every
+    temp file it creates (see _play()) - this is defense in depth
+    against process-crash leaks, not a fix for a leak on the happy
+    path. Never raises; a file that can't be removed (e.g. still locked
+    by another process) is silently skipped, not retried."""
+
+    pattern = os.path.join(tempfile.gettempdir(), TEMP_FILE_PREFIX + "*.wav")
+
+    for path in glob.glob(pattern):
+        try:
+            os.remove(path)
+        except OSError:
+            pass
+
 
 def _play(samples, sample_rate, volume):
     """Write `samples` to a temporary WAV file and play it back
@@ -129,7 +202,7 @@ def _play(samples, sample_rate, volume):
     clipped = np.clip(samples * volume, -1.0, 1.0)
     pcm16 = (clipped * 32767).astype(np.int16)
 
-    fd, path = tempfile.mkstemp(suffix=".wav")
+    fd, path = tempfile.mkstemp(prefix=TEMP_FILE_PREFIX, suffix=".wav")
     os.close(fd)
 
     try:

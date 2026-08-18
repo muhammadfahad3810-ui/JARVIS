@@ -4,72 +4,72 @@ import subprocess
 
 def open_notepad(voice):
 
-    voice.speak("Opening Notepad.")
-
     subprocess.Popen(
         ["notepad.exe"],
         shell=False
     )
 
+    voice.speak("Opening Notepad.")
+
 
 def open_calculator(voice):
-
-    voice.speak("Opening Calculator.")
 
     subprocess.Popen(
         ["calc.exe"],
         shell=False
     )
 
+    voice.speak("Opening Calculator.")
+
 
 def open_command_prompt(voice):
-
-    voice.speak("Opening Command Prompt.")
 
     subprocess.Popen(
         ["cmd.exe"],
         shell=False
     )
 
+    voice.speak("Opening Command Prompt.")
+
 
 def open_powershell(voice):
-
-    voice.speak("Opening PowerShell.")
 
     subprocess.Popen(
         ["powershell.exe"],
         shell=False
     )
 
+    voice.speak("Opening PowerShell.")
+
 
 def open_file_explorer(voice):
-
-    voice.speak("Opening File Explorer.")
 
     subprocess.Popen(
         ["explorer.exe"],
         shell=False
     )
 
+    voice.speak("Opening File Explorer.")
+
 
 def open_settings(voice):
-
-    voice.speak("Opening Windows Settings.")
 
     subprocess.Popen(
         ["cmd", "/c", "start", "ms-settings:"],
         shell=False
     )
 
+    voice.speak("Opening Windows Settings.")
+
 
 def open_task_manager(voice):
-
-    voice.speak("Opening Task Manager.")
 
     subprocess.Popen(
         ["taskmgr.exe"],
         shell=False
     )
+
+    voice.speak("Opening Task Manager.")
 
 
 def lock_computer(voice):

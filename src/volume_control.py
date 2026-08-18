@@ -30,16 +30,16 @@ SET_VOLUME_PATTERN = re.compile(r"^set volume to (\d{1,3})$")
 
 def volume_up(voice):
 
-    voice.speak("Increasing the volume.")
-
     input_control.press_key(input_control.VK_VOLUME_UP)
+
+    voice.speak("Increasing the volume.")
 
 
 def volume_down(voice):
 
-    voice.speak("Decreasing the volume.")
-
     input_control.press_key(input_control.VK_VOLUME_DOWN)
+
+    voice.speak("Decreasing the volume.")
 
 
 def set_volume(voice, percent):
@@ -50,16 +50,25 @@ def set_volume(voice, percent):
     function doesn't trust that it's the only caller, the same way
     window_control.py's by-name action functions never trust that
     their caller already validated the target (see
-    resolve_window_target())."""
+    resolve_window_target()).
+
+    Phase 11.14: the action is attempted BEFORE speaking (previously
+    the "Setting volume to N percent" confirmation was spoken
+    unconditionally before the Core Audio call, so a COMError/OSError
+    produced BOTH that confirmation and the "I couldn't..." failure
+    message - a redundant, slightly misleading double-speak on
+    failure). This also means the spoken response now reflects the
+    real outcome, not an assumed one - the same "check the result,
+    then speak" discipline web_control.py's browser actions already
+    use."""
 
     if not (0 <= percent <= 100):
         voice.speak("I can only set the volume between 0 and 100 percent.")
         return
 
-    voice.speak(f"Setting volume to {percent} percent.")
-
     try:
         audio_endpoint.set_volume_percent(percent)
+        voice.speak(f"Setting volume to {percent} percent.")
     except (OSError, comtypes.COMError):
         voice.speak("I couldn't change the volume.")
 
@@ -69,10 +78,9 @@ def mute(voice):
     regardless of current state). See module docstring: this replaces
     the old multimedia-key toggle behavior from Phase 6 and earlier."""
 
-    voice.speak("Muting the volume.")
-
     try:
         audio_endpoint.set_mute(True)
+        voice.speak("Muting the volume.")
     except (OSError, comtypes.COMError):
         voice.speak("I couldn't mute the volume.")
 
@@ -83,10 +91,9 @@ def unmute(voice):
     replaces the old multimedia-key toggle behavior from Phase 6 and
     earlier."""
 
-    voice.speak("Unmuting the volume.")
-
     try:
         audio_endpoint.set_mute(False)
+        voice.speak("Unmuting the volume.")
     except (OSError, comtypes.COMError):
         voice.speak("I couldn't unmute the volume.")
 

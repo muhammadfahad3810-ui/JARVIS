@@ -1,4 +1,6 @@
+import os
 import sys
+import tempfile
 import winsound
 from unittest.mock import Mock, patch
 
@@ -263,3 +265,140 @@ def test_play_clamps_negative_volume_to_zero():
     written_bytes = mock_wav_file.writeframes.call_args.args[0]
     written = np.frombuffer(written_bytes, dtype=np.int16)
     assert all(v == 0 for v in written)
+
+
+def test_play_uses_the_recognizable_temp_file_prefix():
+    samples = np.zeros(10, dtype=np.float32)
+    captured = []
+
+    real_remove = tts_backend.os.remove
+
+    def spy_remove(path):
+        captured.append(path)
+        real_remove(path)
+
+    with patch("tts_backend.os.remove", side_effect=spy_remove), \
+         patch("winsound.PlaySound"):
+        tts_backend._play(samples, 24000, 1.0)
+
+    assert os.path.basename(captured[0]).startswith(tts_backend.TEMP_FILE_PREFIX)
+
+
+# ---------------------------------------------------------------------
+# Phase 11.14: warm_up() - eager model load
+# ---------------------------------------------------------------------
+
+def test_warm_up_calls_load():
+    backend = tts_backend.KokoroBackend()
+
+    with patch.object(backend, "_load") as mock_load:
+        backend.warm_up()
+
+    mock_load.assert_called_once()
+
+
+def test_warm_up_then_synthesize_does_not_reload():
+    """warm_up() and a later synthesize() must share the same cached
+    Kokoro instance - proves warm_up() isn't a separate, wasted load."""
+    backend = tts_backend.KokoroBackend()
+    fake_kokoro_instance = Mock()
+    fake_kokoro_instance.create.return_value = (
+        np.zeros(10, dtype=np.float32), 24000
+    )
+
+    with patch("onnxruntime.InferenceSession", return_value=Mock()), \
+         patch(
+             "kokoro_onnx.Kokoro.from_session",
+             return_value=fake_kokoro_instance,
+         ) as mock_from_session:
+        backend.warm_up()
+        backend.synthesize("hello", voice="af_heart", speed=1.0)
+
+    mock_from_session.assert_called_once()
+
+
+# ---------------------------------------------------------------------
+# Phase 11.14: stop() / stop_playback()
+# ---------------------------------------------------------------------
+
+def test_stop_playback_purges_winsound():
+    with patch("winsound.PlaySound") as mock_play_sound:
+        tts_backend.stop_playback()
+
+    mock_play_sound.assert_called_once_with(None, winsound.SND_PURGE)
+
+
+def test_stop_playback_never_raises_even_if_winsound_fails():
+    with patch("winsound.PlaySound", side_effect=RuntimeError("boom")):
+        tts_backend.stop_playback()  # must not raise
+
+
+def test_backend_stop_delegates_to_stop_playback():
+    backend = tts_backend.KokoroBackend()
+
+    with patch("tts_backend.stop_playback") as mock_stop:
+        backend.stop()
+
+    mock_stop.assert_called_once()
+
+
+# ---------------------------------------------------------------------
+# Phase 11.14: cleanup_orphaned_temp_files()
+# ---------------------------------------------------------------------
+
+def test_cleanup_removes_only_jarvis_prefixed_wav_files():
+    tmp_dir = tempfile.gettempdir()
+    ours = os.path.join(tmp_dir, f"{tts_backend.TEMP_FILE_PREFIX}orphan123.wav")
+    unrelated = os.path.join(tmp_dir, "some_other_app_file.wav")
+
+    open(ours, "wb").close()
+    open(unrelated, "wb").close()
+
+    try:
+        tts_backend.cleanup_orphaned_temp_files()
+
+        assert not os.path.exists(ours)
+        assert os.path.exists(unrelated)
+    finally:
+        for path in (ours, unrelated):
+            if os.path.exists(path):
+                os.remove(path)
+
+
+def test_cleanup_never_raises_when_nothing_to_clean():
+    tts_backend.cleanup_orphaned_temp_files()  # must not raise
+
+
+def test_cleanup_never_raises_if_a_file_cannot_be_removed():
+    with patch("tts_backend.glob.glob", return_value=["locked_file.wav"]), \
+         patch("tts_backend.os.remove", side_effect=OSError("in use")):
+        tts_backend.cleanup_orphaned_temp_files()  # must not raise
+
+
+# ---------------------------------------------------------------------
+# Phase 11.14: long text
+# ---------------------------------------------------------------------
+
+def test_synthesize_handles_long_text():
+    backend = tts_backend.KokoroBackend()
+    long_text = " ".join(["This is a long response."] * 20)
+    fake_kokoro = _fake_kokoro(samples=np.zeros(50000, dtype=np.float32))
+
+    with patch.object(backend, "_load", return_value=fake_kokoro):
+        samples, sample_rate = backend.synthesize(
+            long_text, voice="af_heart", speed=1.0
+        )
+
+    fake_kokoro.create.assert_called_once_with(
+        long_text, voice="af_heart", speed=1.0, lang="en-us"
+    )
+    assert len(samples) == 50000
+
+
+def test_play_handles_long_audio_without_error():
+    long_samples = np.zeros(24000 * 15, dtype=np.float32)  # 15s of silence
+
+    with patch("winsound.PlaySound") as mock_play_sound:
+        tts_backend._play(long_samples, 24000, 1.0)
+
+    mock_play_sound.assert_called_once()

@@ -11,8 +11,6 @@ SCREENSHOT_DIR = os.path.join(PROJECT_ROOT, "screenshots")
 
 def take_screenshot(voice):
 
-    voice.speak("Taking a screenshot.")
-
     os.makedirs(SCREENSHOT_DIR, exist_ok=True)
 
     # Microsecond precision avoids overwriting a previous screenshot if
@@ -23,6 +21,13 @@ def take_screenshot(voice):
 
     image = ImageGrab.grab()
     image.save(path)
+
+    # Captured BEFORE speaking (Phase 11.14) - the sooner the capture
+    # happens after the command is recognized, the closer it matches
+    # what was on screen when the user actually asked; speaking first
+    # only added TTS latency in front of a capture that takes
+    # milliseconds either way.
+    voice.speak("Taking a screenshot.")
 
     return path
 
