@@ -198,6 +198,20 @@ _BACK_PATTERN = re.compile(r"\bback\b")
 # unrelated phrasing far apart in a longer sentence.
 NEW_TAB_ALIASES = ("new tab", "new chrome tab", "new browser tab", "new edge tab")
 
+# "close (the|this|a|new)* tab" - tolerates the small, fixed set of
+# articles/qualifiers a speaker naturally inserts between "close" and
+# "tab" ("close the tab", "close this tab", "close the new tab").
+# Deliberately a bounded, enumerated word class repeated with `*`, NOT
+# an open "\bclose\b.*\btab\b" that could span an entire unrelated
+# sentence - mirrors intent_layer.py's own _DANGEROUS_ARTICLE pattern
+# (same "optional article between verb and noun" reasoning, same small
+# fixed word list). Checked BEFORE NEW_TAB_ALIASES below: "close the
+# new tab" contains the literal substring "new tab" too, but closing is
+# what the user actually asked for - the more specific, verb-led match
+# must win.
+_TAB_ARTICLE = r"(?:(?:the|this|a|new)\s+)*"
+CLOSE_TAB_RE = re.compile(r"\bclose\b\s+" + _TAB_ARTICLE + r"tab\b")
+
 
 def handle(command, voice):
     """Try to handle a web-related command. Returns True if handled."""
@@ -236,15 +250,19 @@ def handle(command, voice):
     # phrases contain "chrome"/"edge"), and before keyboard_control.
     # handle()'s "press tab" check ever gets a chance to run (this
     # module is earlier in commands.py's dispatch chain) - so "open new
-    # tab"/"tab band karo" (routed here via multilingual_normalizer,
-    # see that module's _check_tab_browser()) can never be mistaken for
-    # the bare Tab key.
-    if any(alias in command for alias in NEW_TAB_ALIASES):
-        new_tab(voice)
+    # tab"/"close the tab"/"tab band karo" (routed here via
+    # multilingual_normalizer, see that module's _check_tab_browser())
+    # can never be mistaken for the bare Tab key. CLOSE_TAB_RE is
+    # checked FIRST, before NEW_TAB_ALIASES: "close the new tab"
+    # contains the literal substring "new tab", but the verb "close"
+    # makes the intent unambiguous and must win (Phase 11.12 fix - see
+    # CLOSE_TAB_RE's own comment above).
+    if CLOSE_TAB_RE.search(command):
+        close_tab(voice)
         return True
 
-    if "close tab" in command:
-        close_tab(voice)
+    if any(alias in command for alias in NEW_TAB_ALIASES):
+        new_tab(voice)
         return True
 
     if "next tab" in command:

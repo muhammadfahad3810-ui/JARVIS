@@ -173,6 +173,28 @@ def test_press_key_tab_rescue_still_works_for_unrelated_tab_phrase():
     assert frames[0].entities == {"key": "tab"}
 
 
+# ---- Phase 11.12: "close (the|this|a|new) tab" article tolerance ----
+
+def test_press_key_tab_excluded_for_close_the_tab_phrase():
+    frames = intent_layer.understand("close the tab")
+    assert not any(f.intent == intent_layer.Intent.PRESS_KEY for f in frames)
+
+
+def test_press_key_tab_excluded_for_close_this_tab_phrase():
+    frames = intent_layer.understand("close this tab")
+    assert not any(f.intent == intent_layer.Intent.PRESS_KEY for f in frames)
+
+
+def test_press_key_tab_excluded_for_close_the_new_tab_phrase():
+    frames = intent_layer.understand("close the new tab")
+    assert not any(f.intent == intent_layer.Intent.PRESS_KEY for f in frames)
+
+
+def test_press_key_tab_excluded_for_new_tab_kholo_phrase():
+    frames = intent_layer.understand("new tab kholo")
+    assert not any(f.intent == intent_layer.Intent.PRESS_KEY for f in frames)
+
+
 # ---------------------------------------------------------------------
 # Targeted window actions
 # ---------------------------------------------------------------------

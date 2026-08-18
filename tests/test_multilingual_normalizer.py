@@ -1552,6 +1552,28 @@ def test_refresh_karo_resolves_to_refresh():
     assert multilingual_normalizer.understand("refresh karo") == "refresh"
 
 
+# ---- Phase 11.12: additional Roman-Urdu navigation/tab aliases ----
+
+def test_new_tab_kholo_resolves_to_new_tab():
+    assert multilingual_normalizer.understand("new tab kholo") == "new tab"
+
+
+def test_aage_jao_resolves_to_go_forward():
+    assert multilingual_normalizer.understand("aage jao") == "go forward"
+
+
+def test_aglay_page_par_jao_resolves_to_go_forward():
+    assert multilingual_normalizer.understand("aglay page par jao") == "go forward"
+
+
+def test_peechay_jao_resolves_to_go_back():
+    assert multilingual_normalizer.understand("peechay jao") == "go back"
+
+
+def test_peeche_jao_resolves_to_go_back():
+    assert multilingual_normalizer.understand("peeche jao") == "go back"
+
+
 # ---- E. Exit: "band ho jao"/"off ho jao" and bare "band karo" ----
 
 EXIT_VARIANT_CASES = (

@@ -271,6 +271,91 @@ def test_handle_close_tab():
     )
 
 
+# ---------------------------------------------------------------------
+# Phase 11.12: CLOSE_TAB article tolerance + precedence over NEW_TAB.
+# Live-test regressions: "close the tab" -> "Pressing Tab." and
+# "close the new tab" -> "Opening new tab.".
+# ---------------------------------------------------------------------
+
+def test_handle_close_the_tab():
+    voice = FakeVoice()
+
+    with patch("web_control.input_control.press_key_combo", return_value=True) as mock_combo:
+        handled = web_control.handle("close the tab", voice)
+
+    assert handled is True
+    mock_combo.assert_called_once_with(
+        input_control.VK_CONTROL, input_control.VK_KEY_W
+    )
+    assert voice.spoken == ["Closing tab."]
+
+
+def test_handle_close_this_tab():
+    voice = FakeVoice()
+
+    with patch("web_control.input_control.press_key_combo", return_value=True) as mock_combo:
+        handled = web_control.handle("close this tab", voice)
+
+    assert handled is True
+    mock_combo.assert_called_once_with(
+        input_control.VK_CONTROL, input_control.VK_KEY_W
+    )
+
+
+def test_handle_close_a_tab():
+    voice = FakeVoice()
+
+    with patch("web_control.input_control.press_key_combo", return_value=True) as mock_combo:
+        handled = web_control.handle("close a tab", voice)
+
+    assert handled is True
+    mock_combo.assert_called_once_with(
+        input_control.VK_CONTROL, input_control.VK_KEY_W
+    )
+
+
+def test_handle_close_the_new_tab_is_close_tab_not_new_tab():
+    """The exact live-test regression: "close the new tab" contains the
+    literal substring "new tab" too, but the verb "close" makes the
+    intent unambiguous and must win over NEW_TAB_ALIASES."""
+    voice = FakeVoice()
+
+    with patch("web_control.input_control.press_key_combo", return_value=True) as mock_combo:
+        handled = web_control.handle("close the new tab", voice)
+
+    assert handled is True
+    mock_combo.assert_called_once_with(
+        input_control.VK_CONTROL, input_control.VK_KEY_W
+    )
+    assert voice.spoken == ["Closing tab."]
+
+
+def test_handle_close_this_new_tab_is_close_tab():
+    voice = FakeVoice()
+
+    with patch("web_control.input_control.press_key_combo", return_value=True) as mock_combo:
+        handled = web_control.handle("close this new tab", voice)
+
+    assert handled is True
+    mock_combo.assert_called_once_with(
+        input_control.VK_CONTROL, input_control.VK_KEY_W
+    )
+
+
+def test_close_the_tab_never_touches_press_key():
+    """Negative case: must never fall through to keyboard_control's
+    "press tab" (this test only proves web_control.handle() itself
+    never calls the single-key press path - see test_commands.py for
+    the full end-to-end proof against keyboard_control)."""
+    voice = FakeVoice()
+
+    with patch("web_control.input_control.press_key_combo", return_value=True), \
+         patch("web_control.input_control.press_key") as mock_press:
+        web_control.handle("close the tab", voice)
+
+    mock_press.assert_not_called()
+
+
 def test_handle_next_tab():
     voice = FakeVoice()
 
@@ -288,6 +373,30 @@ def test_handle_previous_tab():
 
     with patch("web_control.input_control.press_key_combo", return_value=True) as mock_combo:
         handled = web_control.handle("previous tab", voice)
+
+    assert handled is True
+    mock_combo.assert_called_once_with(
+        input_control.VK_CONTROL, input_control.VK_SHIFT, input_control.VK_TAB
+    )
+
+
+def test_handle_switch_to_next_tab():
+    voice = FakeVoice()
+
+    with patch("web_control.input_control.press_key_combo", return_value=True) as mock_combo:
+        handled = web_control.handle("switch to next tab", voice)
+
+    assert handled is True
+    mock_combo.assert_called_once_with(
+        input_control.VK_CONTROL, input_control.VK_TAB
+    )
+
+
+def test_handle_switch_to_previous_tab():
+    voice = FakeVoice()
+
+    with patch("web_control.input_control.press_key_combo", return_value=True) as mock_combo:
+        handled = web_control.handle("switch to previous tab", voice)
 
     assert handled is True
     mock_combo.assert_called_once_with(

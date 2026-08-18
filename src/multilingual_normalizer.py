@@ -466,13 +466,19 @@ SCROLL_DOWN_MARKERS = (
 # before this layer is ever reached) - only the Roman-Urdu phrasings
 # need markers here, same "English already covered upstream" reasoning
 # SCROLL_UP_MARKERS/SCROLL_DOWN_MARKERS above already use.
-NEW_TAB_MARKERS = ("naya tab kholo", "nya tab kholo")
+NEW_TAB_MARKERS = ("naya tab kholo", "nya tab kholo", "new tab kholo")
 CLOSE_TAB_MARKERS = ("tab band karo", "tab band kar do")
 
-# Browser navigation (Roman-Urdu).
+# Browser navigation (Roman-Urdu). Phase 11.12: added "aage jao" (a
+# common alternate spelling of "aagay jao"), "aglay page par jao"
+# ("go to the next page" - a distinct, longer phrasing of the same
+# GO_FORWARD intent) and, symmetrically, "peechay jao"/"peeche jao"
+# (alternate spellings of "back") alongside the existing "wapas jao".
 REFRESH_MARKERS = ("refresh karo",)
-GO_BACK_MARKERS = ("wapas jao",)
-GO_FORWARD_MARKERS = ("aagay jao", "agay jao")
+GO_BACK_MARKERS = ("wapas jao", "peechay jao", "peeche jao")
+GO_FORWARD_MARKERS = (
+    "aagay jao", "agay jao", "aage jao", "aglay page par jao",
+)
 
 GREETING_MARKERS = (
     "سلام", "السلام علیکم", "ہیلو", "salaam", "assalam", "hello",

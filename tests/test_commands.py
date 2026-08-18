@@ -4209,3 +4209,282 @@ def test_new_tab_still_reports_success_on_a_healthy_injection():
 
     assert result is True
     assert voice.spoken == ["Opening new tab."]
+
+
+# =======================================================================
+# PHASE 11.12: natural-language precedence hardening + Roman-Urdu
+# navigation aliases (live-test follow-up).
+#
+# Live bugs fixed here:
+#   1. "jarvis close the tab" -> "Pressing Tab." (web_control had no
+#      CLOSE_TAB recognition at all for anything but the exact,
+#      article-free "close tab", so it fell all the way through to
+#      intent_layer's bare "tab" PRESS_KEY rescue.)
+#   2. "jarvis close the new tab" -> "Opening new tab." (NEW_TAB_ALIASES
+#      matched the literal substring "new tab" inside the phrase before
+#      any CLOSE_TAB check existed at all.)
+#   3. "jarvis aage jao" was not recognized (missing Roman-Urdu spelling
+#      variant of "aagay jao").
+# See web_control.CLOSE_TAB_RE and multilingual_normalizer.GO_FORWARD_
+# MARKERS/GO_BACK_MARKERS for the fixes.
+# =======================================================================
+
+# ---- Bug 1 + 2: CLOSE_TAB precedence, end-to-end ----
+
+def test_close_the_tab_is_close_tab_not_press_tab():
+    processor, voice = make_processor()
+
+    with patch("web_control.input_control.press_key_combo") as mock_web_combo, \
+         patch("keyboard_control.input_control.press_key") as mock_key_press:
+        result = processor.process("close the tab")
+
+    assert result is True
+    mock_key_press.assert_not_called()
+    mock_web_combo.assert_called_once_with(
+        input_control.VK_CONTROL, input_control.VK_KEY_W
+    )
+    assert voice.spoken == ["Closing tab."]
+
+
+def test_close_this_tab_is_close_tab():
+    processor, voice = make_processor()
+
+    with patch("web_control.input_control.press_key_combo") as mock_web_combo:
+        result = processor.process("close this tab")
+
+    assert result is True
+    mock_web_combo.assert_called_once_with(
+        input_control.VK_CONTROL, input_control.VK_KEY_W
+    )
+
+
+def test_close_the_new_tab_is_close_tab_not_new_tab():
+    processor, voice = make_processor()
+
+    with patch("web_control.input_control.press_key_combo") as mock_web_combo:
+        result = processor.process("close the new tab")
+
+    assert result is True
+    mock_web_combo.assert_called_once_with(
+        input_control.VK_CONTROL, input_control.VK_KEY_W
+    )
+    assert voice.spoken == ["Closing tab."]
+
+
+def test_tab_band_karo_still_resolves_to_close_tab_after_precedence_fix():
+    """Regression: the Phase 11.12 CLOSE_TAB_RE change must not affect
+    the pre-existing Roman-Urdu path at all."""
+    processor, voice = make_processor()
+
+    with patch.object(config, "ENABLE_MULTILINGUAL_LAYER", True), \
+         patch("web_control.input_control.press_key_combo") as mock_web_combo:
+        result = processor.process("tab band karo")
+
+    assert result is True
+    mock_web_combo.assert_called_once_with(
+        input_control.VK_CONTROL, input_control.VK_KEY_W
+    )
+
+
+def test_tab_band_kar_do_resolves_to_close_tab():
+    processor, voice = make_processor()
+
+    with patch.object(config, "ENABLE_MULTILINGUAL_LAYER", True), \
+         patch("web_control.input_control.press_key_combo") as mock_web_combo:
+        result = processor.process("tab band kar do")
+
+    assert result is True
+    mock_web_combo.assert_called_once_with(
+        input_control.VK_CONTROL, input_control.VK_KEY_W
+    )
+
+
+# ---- Bug 3 + new aliases: Roman-Urdu GO_FORWARD/GO_BACK, end-to-end ----
+
+def test_aage_jao_is_go_forward():
+    processor, voice = make_processor()
+
+    with patch.object(config, "ENABLE_MULTILINGUAL_LAYER", True), \
+         patch("web_control.input_control.press_key_combo") as mock_combo:
+        result = processor.process("aage jao")
+
+    assert result is True
+    mock_combo.assert_called_once_with(
+        input_control.VK_MENU, input_control.VK_RIGHT
+    )
+    assert voice.spoken == ["Going forward."]
+
+
+def test_agay_jao_is_go_forward():
+    processor, voice = make_processor()
+
+    with patch.object(config, "ENABLE_MULTILINGUAL_LAYER", True), \
+         patch("web_control.input_control.press_key_combo") as mock_combo:
+        result = processor.process("agay jao")
+
+    assert result is True
+    mock_combo.assert_called_once_with(
+        input_control.VK_MENU, input_control.VK_RIGHT
+    )
+
+
+def test_aglay_page_par_jao_is_go_forward():
+    processor, voice = make_processor()
+
+    with patch.object(config, "ENABLE_MULTILINGUAL_LAYER", True), \
+         patch("web_control.input_control.press_key_combo") as mock_combo:
+        result = processor.process("aglay page par jao")
+
+    assert result is True
+    mock_combo.assert_called_once_with(
+        input_control.VK_MENU, input_control.VK_RIGHT
+    )
+
+
+def test_wapas_jao_still_is_go_back_after_alias_additions():
+    processor, voice = make_processor()
+
+    with patch.object(config, "ENABLE_MULTILINGUAL_LAYER", True), \
+         patch("web_control.input_control.press_key_combo") as mock_combo:
+        result = processor.process("wapas jao")
+
+    assert result is True
+    mock_combo.assert_called_once_with(
+        input_control.VK_MENU, input_control.VK_LEFT
+    )
+
+
+def test_peeche_jao_is_go_back():
+    processor, voice = make_processor()
+
+    with patch.object(config, "ENABLE_MULTILINGUAL_LAYER", True), \
+         patch("web_control.input_control.press_key_combo") as mock_combo:
+        result = processor.process("peeche jao")
+
+    assert result is True
+    mock_combo.assert_called_once_with(
+        input_control.VK_MENU, input_control.VK_LEFT
+    )
+    assert voice.spoken == ["Going back."]
+
+
+def test_peechay_jao_is_go_back():
+    processor, voice = make_processor()
+
+    with patch.object(config, "ENABLE_MULTILINGUAL_LAYER", True), \
+         patch("web_control.input_control.press_key_combo") as mock_combo:
+        result = processor.process("peechay jao")
+
+    assert result is True
+    mock_combo.assert_called_once_with(
+        input_control.VK_MENU, input_control.VK_LEFT
+    )
+
+
+def test_new_tab_kholo_is_new_tab():
+    processor, voice = make_processor()
+
+    with patch.object(config, "ENABLE_MULTILINGUAL_LAYER", True), \
+         patch("web_control.input_control.press_key_combo") as mock_combo:
+        result = processor.process("new tab kholo")
+
+    assert result is True
+    mock_combo.assert_called_once_with(
+        input_control.VK_CONTROL, input_control.VK_KEY_T
+    )
+
+
+# ---- Negative cases: generic PRESS_TAB/NEW_TAB must never steal a
+# more specific command (task's explicit "!= " requirements) ----
+
+def test_close_the_tab_result_is_not_pressing_tab_message():
+    processor, voice = make_processor()
+
+    with patch("web_control.input_control.press_key_combo", return_value=True), \
+         patch("keyboard_control.input_control.press_key") as mock_press:
+        processor.process("close the tab")
+
+    mock_press.assert_not_called()
+    assert "Pressing Tab." not in voice.spoken
+
+
+def test_close_the_new_tab_result_is_not_opening_new_tab_message():
+    processor, voice = make_processor()
+
+    with patch("web_control.input_control.press_key_combo", return_value=True):
+        processor.process("close the new tab")
+
+    assert "Opening new tab." not in voice.spoken
+
+
+def test_open_a_new_tab_is_not_pressing_tab():
+    processor, voice = make_processor()
+
+    with patch("web_control.input_control.press_key_combo", return_value=True), \
+         patch("keyboard_control.input_control.press_key") as mock_press:
+        result = processor.process("open a new tab")
+
+    assert result is True
+    mock_press.assert_not_called()
+    assert "Pressing Tab." not in voice.spoken
+
+
+def test_next_tab_is_not_pressing_tab():
+    processor, voice = make_processor()
+
+    with patch("web_control.input_control.press_key_combo", return_value=True), \
+         patch("keyboard_control.input_control.press_key") as mock_press:
+        processor.process("next tab")
+
+    mock_press.assert_not_called()
+
+
+def test_previous_tab_is_not_pressing_tab():
+    processor, voice = make_processor()
+
+    with patch("web_control.input_control.press_key_combo", return_value=True), \
+         patch("keyboard_control.input_control.press_key") as mock_press:
+        processor.process("previous tab")
+
+    mock_press.assert_not_called()
+
+
+# ---- Case-insensitivity / whitespace for the new phrases ----
+
+def test_close_the_tab_case_insensitive_and_whitespace():
+    processor, voice = make_processor()
+
+    with patch("web_control.input_control.press_key_combo") as mock_combo:
+        result = processor.process("  Close   The   Tab  ")
+
+    assert result is True
+    mock_combo.assert_called_once_with(
+        input_control.VK_CONTROL, input_control.VK_KEY_W
+    )
+
+
+# ---- Safety: dangerous-command gate and the blocked Delete key must
+# remain completely untouched by this phase's normalization changes ----
+
+def test_lock_computer_unaffected_by_phase_11_12_changes():
+    processor, voice = make_processor()
+
+    with patch.object(
+        config, "REQUIRE_CONFIRMATION_FOR_DANGEROUS_COMMANDS", True
+    ), patch("system_control.os.system") as mock_system:
+        result = processor.process("lock computer")
+
+    assert result is True
+    mock_system.assert_not_called()
+    assert "sure" in voice.spoken[-1].lower()
+
+
+def test_press_delete_still_unrecognized_after_phase_11_12():
+    processor, voice = make_processor()
+
+    with patch("keyboard_control.input_control.press_key") as mock_press:
+        result = processor.process("press delete")
+
+    assert result is True
+    mock_press.assert_not_called()
+    assert "don't know how to do that" in voice.spoken[-1]

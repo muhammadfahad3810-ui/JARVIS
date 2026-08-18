@@ -220,15 +220,32 @@ TAB_MANAGEMENT_MARKERS = (
     "new tab", "close tab", "next tab", "previous tab",
     "new chrome tab", "new browser tab", "new edge tab",
     "tab band karo", "tab band kar do",
-    "naya tab kholo", "nya tab kholo",
+    "naya tab kholo", "nya tab kholo", "new tab kholo",
 )
 TAB_MANAGEMENT_PATTERNS = [
     re.compile(r"\b" + re.escape(marker) + r"\b")
     for marker in TAB_MANAGEMENT_MARKERS
 ]
 
+# Phase 11.12: "close the tab"/"close this tab"/"close the new tab" -
+# the fixed-phrase list above only ever caught the exact, article-free
+# "close tab", so these were falling through to the bare "tab" rescue
+# just like "open new tab" originally did. Deliberately the SAME
+# bounded article class (never an open "\bclose\b.*\btab\b") as web_
+# control.CLOSE_TAB_RE - duplicated here rather than imported, because
+# this module must stay pure and never import a control module (see
+# this module's own docstring) even indirectly; the two patterns are
+# kept in sync by hand, the same "defined once per side, deliberately
+# not shared" discipline commands.DANGEROUS_COMMANDS already uses for
+# system_control.py's dangerous phrases.
+_TAB_MANAGEMENT_CLOSE_RE = re.compile(
+    r"\bclose\b\s+(?:(?:the|this|a|new)\s+)*tab\b"
+)
+
 
 def _is_tab_management_phrase(text):
+    if _TAB_MANAGEMENT_CLOSE_RE.search(text):
+        return True
     return any(pattern.search(text) for pattern in TAB_MANAGEMENT_PATTERNS)
 
 # Action-word synonyms not already covered by window_control.handle_
