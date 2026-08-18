@@ -10,6 +10,7 @@ import media_control
 import mouse_control
 import volume_control
 import keyboard_control
+import voice
 import web_control
 import window_control
 
@@ -4654,3 +4655,209 @@ def test_open_chrome_unaffected_by_closed_tab_regex():
     assert result is True
     mock_open.assert_called_once_with("https://www.google.com")
     assert voice.spoken == ["Opening Chrome."]
+
+
+# =======================================================================
+# PHASE 11.15: English-voice multilingual input validation.
+#
+# No source changes were needed for this phase - multilingual_
+# normalizer.py already renders every recognized Roman-Urdu/Urdu-script
+# phrase to one of the exact same fixed, English canonical command
+# strings the primary dispatch chain already understands (see that
+# module's own docstring), and is structurally incapable of speaking
+# anything itself (it imports no control module and no voice.py - see
+# tests/test_multilingual_normalizer.py's own structural-purity test).
+# These tests exist to PROVE that property end-to-end, not to change
+# behavior - see the four worked examples in the Phase 11.15 task spec.
+# =======================================================================
+
+def test_chrome_kholo_opens_chrome_with_english_response():
+    processor, voice = make_processor()
+
+    with patch("web_control.os.path.exists", return_value=False), \
+         patch("web_control.webbrowser.open") as mock_open:
+        result = processor.process("chrome kholo")
+
+    assert result is True
+    mock_open.assert_called_once()
+    assert voice.spoken == ["Opening Chrome."]
+
+
+def test_naya_tab_kholo_opens_new_tab_with_english_response():
+    processor, voice = make_processor()
+
+    with patch("web_control.input_control.press_key_combo", return_value=True) as mock_combo:
+        result = processor.process("naya tab kholo")
+
+    assert result is True
+    mock_combo.assert_called_once_with(
+        input_control.VK_CONTROL, input_control.VK_KEY_T
+    )
+    assert voice.spoken == ["Opening new tab."]
+
+
+def test_niche_scroll_karo_scrolls_down_with_english_response():
+    processor, voice = make_processor()
+
+    with patch("keyboard_control.input_control.press_key", return_value=True) as mock_press:
+        result = processor.process("niche scroll karo")
+
+    assert result is True
+    mock_press.assert_called_once_with(input_control.VK_NEXT)
+    assert voice.spoken == ["Scrolling down."]
+
+
+def test_wapas_jao_goes_back_with_english_response():
+    processor, voice = make_processor()
+
+    with patch("web_control.input_control.press_key_combo", return_value=True) as mock_combo:
+        result = processor.process("wapas jao")
+
+    assert result is True
+    mock_combo.assert_called_once_with(
+        input_control.VK_MENU, input_control.VK_LEFT
+    )
+    assert voice.spoken == ["Going back."]
+
+
+# ---- English commands verified unaffected (anchor tests - the bulk
+# of English coverage lives in each control module's own test file) ----
+
+def test_english_open_chrome_unaffected():
+    processor, voice = make_processor()
+
+    with patch("web_control.os.path.exists", return_value=False), \
+         patch("web_control.webbrowser.open"):
+        result = processor.process("open chrome")
+
+    assert result is True
+    assert voice.spoken == ["Opening Chrome."]
+
+
+def test_english_scroll_down_unaffected():
+    processor, voice = make_processor()
+
+    with patch("keyboard_control.input_control.press_key", return_value=True):
+        result = processor.process("scroll down")
+
+    assert result is True
+    assert voice.spoken == ["Scrolling down."]
+
+
+def test_english_next_tab_unaffected():
+    processor, voice = make_processor()
+
+    with patch("web_control.input_control.press_key_combo", return_value=True):
+        result = processor.process("next tab")
+
+    assert result is True
+    assert voice.spoken == ["Switching to the next tab."]
+
+
+# ---- Phase 9 security boundary re-verified after this phase's audit
+# (no change made - see tests/test_security.py for the canonical
+# coverage; these are direct anchor tests for THIS phase's own record) ----
+
+def test_press_delete_remains_unrecognized_phase_11_15():
+    processor, voice = make_processor()
+
+    with patch("keyboard_control.input_control.press_key") as mock_press:
+        result = processor.process("press delete")
+
+    assert result is True
+    mock_press.assert_not_called()
+    assert "don't know how to do that" in voice.spoken[-1]
+
+
+def test_press_del_remains_unrecognized_phase_11_15():
+    processor, voice = make_processor()
+
+    with patch("keyboard_control.input_control.press_key") as mock_press:
+        result = processor.process("press del")
+
+    assert result is True
+    mock_press.assert_not_called()
+    assert "don't know how to do that" in voice.spoken[-1]
+
+
+# ---- Requirement 11: the TTS layer itself receives an English string,
+# not just that FakeVoice.spoken (a plain Python list) happens to hold
+# one - this goes one level deeper and inspects the exact `text`
+# argument passed to the neural backend's own speak() call. ----
+
+def _make_real_voice_with_fake_neural_backend():
+    """Builds a REAL voice.Voice() (not FakeVoice) with pyttsx3 mocked
+    out and a fake, always-available neural backend standing in for
+    Kokoro - so the text argument reaching "the TTS layer" can be
+    captured directly, without needing the real model files."""
+
+    from unittest.mock import Mock
+
+    fake_backend = Mock()
+    fake_backend.is_available.return_value = True
+
+    with patch("voice.pyttsx3.init", return_value=Mock()), \
+         patch("voice.config.TTS_BACKEND", "kokoro"), \
+         patch("voice.tts_backend.KokoroBackend", return_value=fake_backend):
+        v = voice.Voice()
+
+    return v, fake_backend
+
+
+def test_tts_layer_receives_english_text_for_roman_urdu_command():
+    v, fake_backend = _make_real_voice_with_fake_neural_backend()
+    processor = commands.CommandProcessor(v)
+
+    with patch("web_control.input_control.press_key_combo", return_value=True):
+        processor.process("wapas jao")
+
+    fake_backend.speak.assert_called_once()
+    spoken_text = fake_backend.speak.call_args.args[0]
+    assert spoken_text == "Going back."
+    assert spoken_text.isascii()
+
+
+def test_tts_layer_receives_english_text_for_multiple_roman_urdu_commands():
+    v, fake_backend = _make_real_voice_with_fake_neural_backend()
+    processor = commands.CommandProcessor(v)
+
+    cases = [
+        ("chrome kholo", "Opening Chrome."),
+        ("naya tab kholo", "Opening new tab."),
+        ("niche scroll karo", "Scrolling down."),
+    ]
+
+    with patch("web_control.os.path.exists", return_value=False), \
+         patch("web_control.webbrowser.open"), \
+         patch("web_control.input_control.press_key_combo", return_value=True), \
+         patch("keyboard_control.input_control.press_key", return_value=True):
+        for command, expected in cases:
+            fake_backend.speak.reset_mock()
+            processor.process(command)
+
+            fake_backend.speak.assert_called_once()
+            spoken_text = fake_backend.speak.call_args.args[0]
+            assert spoken_text == expected
+            assert spoken_text.isascii()
+
+
+def test_tts_layer_never_receives_urdu_script_for_the_four_worked_examples():
+    """Structural proof, not just an equality check: none of the four
+    Phase 11.15 worked-example commands can ever put non-ASCII text in
+    front of the TTS layer, regardless of which script the command
+    itself was spoken in."""
+    v, fake_backend = _make_real_voice_with_fake_neural_backend()
+    processor = commands.CommandProcessor(v)
+
+    commands_to_try = ["chrome kholo", "naya tab kholo", "niche scroll karo", "wapas jao"]
+
+    with patch("web_control.os.path.exists", return_value=False), \
+         patch("web_control.webbrowser.open"), \
+         patch("web_control.input_control.press_key_combo", return_value=True), \
+         patch("keyboard_control.input_control.press_key", return_value=True):
+        for command in commands_to_try:
+            fake_backend.speak.reset_mock()
+            processor.process(command)
+
+            for call_args in fake_backend.speak.call_args_list:
+                assert call_args.args[0].isascii()
