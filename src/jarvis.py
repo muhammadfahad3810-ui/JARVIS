@@ -2,12 +2,14 @@ import re
 import sys
 import time
 
+import ai_backend
 import command_parser
 import commands
 import config
 import intent_layer
 import multilingual_normalizer
 import speech
+import structured_llm_backend
 import voice
 
 
@@ -225,6 +227,63 @@ def is_wake_word_recovery_confirmation(text):
     return WAKE_WORD_RECOVERY_CONFIRM_PATTERN.search(text) is not None
 
 
+# =============================================================
+# PHASE 12.2.5: AI backend startup wiring
+# =============================================================
+#
+# The smallest hook connecting the already-validated, already-tested
+# StructuredLocalLLMBackend (Phase 12.2.4) to ai_backend.register_
+# backend() - the ONE place any future LLM provider was always meant
+# to be wired in (see ai_backend.py's own docstring). Nothing about
+# the security model changes: ai_router.py and ai_tools.py are
+# untouched by this function, the deterministic dispatch chain in
+# commands.py still runs first and is unaffected by whether a backend
+# is registered, and every response a registered backend ever
+# produces is still independently re-validated by ai_tools.
+# process_tool_call() before it can become a canonical command.
+#
+# Default OFF: config.ENABLE_AI_LAYER is False by default (see
+# config.py). With the flag off, this function registers nothing -
+# it explicitly clears any previously-registered backend first, so
+# the result never depends on what ran earlier in the same process
+# (relevant for tests, which may construct several Jarvis instances)
+# - and JARVIS starts exactly as it did before this phase. Flipping
+# the flag on is a local/temporary testing decision made in config.py,
+# never something this function does on its own.
+#
+# Fails closed on initialization failure: if constructing
+# StructuredLocalLLMBackend raises for any reason, the exception is
+# caught here, JARVIS still starts, and no backend ends up registered.
+# ai_router.handle() already treats "no backend registered" as its
+# normal, expected "nothing to do" case (see ai_router.py's own
+# docstring), so this is not a special-cased failure path - it is the
+# same inert state as AI being disabled. Note StructuredLocalLLMBackend.
+# __init__() itself never makes a network call (it only reads ai_
+# tools.TOOL_REGISTRY to build its schema) - an unreachable Ollama
+# server is instead handled where it already was, by ai_router.py's
+# existing try/except around backend.converse().
+def _initialize_ai_backend():
+
+    if not config.ENABLE_AI_LAYER:
+        ai_backend.register_backend(None)
+        return
+
+    try:
+        backend = structured_llm_backend.StructuredLocalLLMBackend()
+    except Exception as error:
+
+        if config.DEBUG:
+            print(
+                f"[DEBUG] AI backend initialization failed, "
+                f"AI layer stays inactive: {error}"
+            )
+
+        ai_backend.register_backend(None)
+        return
+
+    ai_backend.register_backend(backend)
+
+
 class Jarvis:
 
     def __init__(self):
@@ -232,6 +291,8 @@ class Jarvis:
         self.voice = voice.Voice()
         self.speech = speech.Speech(self.voice)
         self.commands = commands.CommandProcessor(self.voice)
+
+        _initialize_ai_backend()
 
         self.running = True
 
