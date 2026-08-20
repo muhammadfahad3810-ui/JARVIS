@@ -1,8 +1,8 @@
-"""Phase 12.2.5: startup-wiring tests for jarvis._initialize_ai_backend().
+"""Phase 12.2.5/12.2.7: startup-wiring tests for jarvis._initialize_ai_backend().
 
 Everything that would touch the real world is mocked: voice.Voice and
 speech.Speech (no real microphone/TTS engine), and (where a backend is
-registered) StructuredLocalLLMBackend itself, so these tests never make
+registered) TwoStageLocalLLMBackend itself, so these tests never make
 a real network call to Ollama. No control-module action ever runs.
 """
 
@@ -11,7 +11,7 @@ from unittest.mock import MagicMock, patch
 import ai_backend
 import config
 import jarvis as jarvis_module
-import structured_llm_backend
+import two_stage_llm_backend
 
 
 class FakeVoice:
@@ -78,14 +78,14 @@ def test_ai_disabled_clears_a_previously_registered_backend():
 
 def test_ai_disabled_never_instantiates_structured_backend():
     with patch.object(config, "ENABLE_AI_LAYER", False), \
-         patch("jarvis.structured_llm_backend.StructuredLocalLLMBackend") as mock_cls:
+         patch("jarvis.two_stage_llm_backend.TwoStageLocalLLMBackend") as mock_cls:
         make_jarvis()
 
     mock_cls.assert_not_called()
 
 
 # ---------------------------------------------------------------------
-# AI enabled -> StructuredLocalLLMBackend registered exactly once
+# AI enabled -> TwoStageLocalLLMBackend registered exactly once
 # ---------------------------------------------------------------------
 
 def test_ai_enabled_registers_structured_local_llm_backend_exactly_once():
@@ -94,15 +94,15 @@ def test_ai_enabled_registers_structured_local_llm_backend_exactly_once():
         j, _, _ = make_jarvis()
 
     backend = ai_backend.get_backend()
-    assert isinstance(backend, structured_llm_backend.StructuredLocalLLMBackend)
+    assert isinstance(backend, two_stage_llm_backend.TwoStageLocalLLMBackend)
     assert mock_register.call_count == 1
 
 
 def test_ai_enabled_constructs_backend_exactly_once():
     with patch.object(config, "ENABLE_AI_LAYER", True), \
          patch(
-             "jarvis.structured_llm_backend.StructuredLocalLLMBackend",
-             wraps=structured_llm_backend.StructuredLocalLLMBackend,
+             "jarvis.two_stage_llm_backend.TwoStageLocalLLMBackend",
+             wraps=two_stage_llm_backend.TwoStageLocalLLMBackend,
          ) as mock_cls:
         make_jarvis()
 
@@ -129,7 +129,7 @@ def test_ai_enabled_backend_init_makes_no_network_call():
 def test_backend_initialization_failure_still_starts_jarvis():
     with patch.object(config, "ENABLE_AI_LAYER", True), \
          patch(
-             "jarvis.structured_llm_backend.StructuredLocalLLMBackend",
+             "jarvis.two_stage_llm_backend.TwoStageLocalLLMBackend",
              side_effect=RuntimeError("boom"),
          ):
         j, voice_double, _ = make_jarvis()
@@ -140,7 +140,7 @@ def test_backend_initialization_failure_still_starts_jarvis():
 def test_backend_initialization_failure_registers_nothing():
     with patch.object(config, "ENABLE_AI_LAYER", True), \
          patch(
-             "jarvis.structured_llm_backend.StructuredLocalLLMBackend",
+             "jarvis.two_stage_llm_backend.TwoStageLocalLLMBackend",
              side_effect=RuntimeError("boom"),
          ):
         make_jarvis()
@@ -153,7 +153,7 @@ def test_backend_initialization_failure_does_not_propagate():
     Jarvis.__init__() - it is caught inside _initialize_ai_backend()."""
     with patch.object(config, "ENABLE_AI_LAYER", True), \
          patch(
-             "jarvis.structured_llm_backend.StructuredLocalLLMBackend",
+             "jarvis.two_stage_llm_backend.TwoStageLocalLLMBackend",
              side_effect=RuntimeError("boom"),
          ):
         # make_jarvis() itself will raise here if the exception escapes -
@@ -163,7 +163,7 @@ def test_backend_initialization_failure_does_not_propagate():
 
 # ---------------------------------------------------------------------
 # Deterministic commands never reach the AI backend, even when a real
-# StructuredLocalLLMBackend-shaped spy IS registered at startup
+# TwoStageLocalLLMBackend-shaped spy IS registered at startup
 # ---------------------------------------------------------------------
 
 class _SpyBackend(ai_backend.AIBackend):
@@ -182,7 +182,7 @@ class _SpyBackend(ai_backend.AIBackend):
 
 def test_deterministic_commands_never_reach_the_startup_registered_backend():
     with patch.object(config, "ENABLE_AI_LAYER", True), \
-         patch("jarvis.structured_llm_backend.StructuredLocalLLMBackend", _SpyBackend):
+         patch("jarvis.two_stage_llm_backend.TwoStageLocalLLMBackend", _SpyBackend):
         j, voice_double, _ = make_jarvis()
 
         backend = ai_backend.get_backend()
@@ -223,7 +223,7 @@ def test_non_deterministic_command_does_reach_the_startup_registered_backend():
             return ai_backend.AIResponse.speak("I'm not sure how to help with that.")
 
     with patch.object(config, "ENABLE_AI_LAYER", True), \
-         patch("jarvis.structured_llm_backend.StructuredLocalLLMBackend", _RespondingSpyBackend):
+         patch("jarvis.two_stage_llm_backend.TwoStageLocalLLMBackend", _RespondingSpyBackend):
         j, voice_double, _ = make_jarvis()
 
         backend = ai_backend.get_backend()

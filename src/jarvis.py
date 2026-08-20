@@ -9,7 +9,7 @@ import config
 import intent_layer
 import multilingual_normalizer
 import speech
-import structured_llm_backend
+import two_stage_llm_backend
 import voice
 
 
@@ -228,19 +228,23 @@ def is_wake_word_recovery_confirmation(text):
 
 
 # =============================================================
-# PHASE 12.2.5: AI backend startup wiring
+# PHASE 12.2.5/12.2.7: AI backend startup wiring
 # =============================================================
 #
 # The smallest hook connecting the already-validated, already-tested
-# StructuredLocalLLMBackend (Phase 12.2.4) to ai_backend.register_
-# backend() - the ONE place any future LLM provider was always meant
-# to be wired in (see ai_backend.py's own docstring). Nothing about
-# the security model changes: ai_router.py and ai_tools.py are
-# untouched by this function, the deterministic dispatch chain in
-# commands.py still runs first and is unaffected by whether a backend
-# is registered, and every response a registered backend ever
-# produces is still independently re-validated by ai_tools.
-# process_tool_call() before it can become a canonical command.
+# TwoStageLocalLLMBackend (Phase 12.2.7, replacing StructuredLocal
+# LLMBackend from Phase 12.2.4 - see two_stage_llm_backend.py's own
+# docstring for why: the Phase 12.2.6 benchmark measured a materially
+# lower false-tool-call rate for the two-stage design on the same live
+# model/prompt set) to ai_backend.register_backend() - the ONE place
+# any future LLM provider was always meant to be wired in (see ai_
+# backend.py's own docstring). Nothing about the security model
+# changes: ai_router.py and ai_tools.py are untouched by this function,
+# the deterministic dispatch chain in commands.py still runs first and
+# is unaffected by whether a backend is registered, and every response
+# a registered backend ever produces is still independently re-
+# validated by ai_tools.process_tool_call() before it can become a
+# canonical command.
 #
 # Default OFF: config.ENABLE_AI_LAYER is False by default (see
 # config.py). With the flag off, this function registers nothing -
@@ -252,16 +256,16 @@ def is_wake_word_recovery_confirmation(text):
 # never something this function does on its own.
 #
 # Fails closed on initialization failure: if constructing
-# StructuredLocalLLMBackend raises for any reason, the exception is
+# TwoStageLocalLLMBackend raises for any reason, the exception is
 # caught here, JARVIS still starts, and no backend ends up registered.
 # ai_router.handle() already treats "no backend registered" as its
 # normal, expected "nothing to do" case (see ai_router.py's own
 # docstring), so this is not a special-cased failure path - it is the
-# same inert state as AI being disabled. Note StructuredLocalLLMBackend.
+# same inert state as AI being disabled. Note TwoStageLocalLLMBackend.
 # __init__() itself never makes a network call (it only reads ai_
-# tools.TOOL_REGISTRY to build its schema) - an unreachable Ollama
-# server is instead handled where it already was, by ai_router.py's
-# existing try/except around backend.converse().
+# tools.TOOL_REGISTRY to build its stage-2 schema) - an unreachable
+# Ollama server is instead handled where it already was, by ai_
+# router.py's existing try/except around backend.converse().
 def _initialize_ai_backend():
 
     if not config.ENABLE_AI_LAYER:
@@ -269,7 +273,7 @@ def _initialize_ai_backend():
         return
 
     try:
-        backend = structured_llm_backend.StructuredLocalLLMBackend()
+        backend = two_stage_llm_backend.TwoStageLocalLLMBackend()
     except Exception as error:
 
         if config.DEBUG:
